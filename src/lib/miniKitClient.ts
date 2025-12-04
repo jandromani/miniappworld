@@ -1,4 +1,11 @@
-import { MiniKit, VerificationLevel, Tokens, PayCommandInput } from '@worldcoin/minikit-js';
+import {
+  MiniKit,
+  VerificationLevel,
+  Tokens,
+  PayCommandInput,
+  MiniAppPaymentErrorPayload,
+  MiniAppPaymentSuccessPayload,
+} from '@worldcoin/minikit-js';
 
 /**
  * Verificar World ID (prueba de persona única)
@@ -23,16 +30,14 @@ export async function verifyWorldID(action: string) {
 /**
  * Pagar con Pay command (WLD, USDC, etc.)
  */
-export async function payWithMiniKit(payload: PayCommandInput) {
+export async function payWithMiniKit(
+  payload: PayCommandInput
+): Promise<MiniAppPaymentSuccessPayload | MiniAppPaymentErrorPayload> {
   if (!MiniKit.isInstalled()) {
     throw new Error('MiniKit no está instalado');
   }
 
   const { finalPayload } = await MiniKit.commandsAsync.pay(payload);
-
-  if (finalPayload.status === 'error') {
-    throw new Error(`Error en Pay: ${finalPayload.error_code}`);
-  }
 
   return finalPayload;
 }
