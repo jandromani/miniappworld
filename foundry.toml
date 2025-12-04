@@ -1,0 +1,8 @@
+[profile.default]
+src = "contracts"
+test = "test"
+script = "scripts"
+libs = ["lib"]
+solc_version = "0.8.20"
+evm_version = "paris"
+
