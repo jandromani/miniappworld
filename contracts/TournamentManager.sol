@@ -162,11 +162,12 @@ contract TournamentManager is Ownable, ReentrancyGuard {
 
         uint256[] memory prizes = new uint256[](tournament.winners.length);
         uint256 pool = tournament.prizePool;
+        IERC20 prizeToken = tournament.buyInToken;
 
         for (uint256 i = 0; i < tournament.winners.length; i++) {
             uint256 share = tournament.prizeDistribution[i];
             prizes[i] = (pool * share) / PRIZE_DISTRIBUTION_SCALE;
-            tournament.buyInToken.safeTransfer(tournament.winners[i], prizes[i]);
+            prizeToken.safeTransfer(tournament.winners[i], prizes[i]);
         }
 
         tournament.prizesDistributed = true;

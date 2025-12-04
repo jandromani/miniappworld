@@ -30,6 +30,7 @@ World ID y `sendHapticFeedback` para feedback táctil.
 - `app/api/initiate-payment`: Genera payload para comando `pay`.
 - `app/api/confirm-payment`: Confirma y registra hashes de pago.
 - `app/api/send-notification`: Simula el envío de notificaciones a ganadores.
+- `app/api/tournaments/create`: Valida (mock) la creación de torneos y whitelist de tokens.
 - `contracts/TournamentManager.sol`: Contrato principal para registrar torneos, manejar buy-ins y distribuir premios usando ERC-20.
 - `contracts/TournamentPool.sol`: Contrato simple para pools de torneos (ejemplo legacy).
 
@@ -61,6 +62,14 @@ Las rutas de documentación relevantes son:
    forge script scripts/deploy.s.sol --rpc-url <RPC_WORLD_CHAIN> --broadcast
    ```
 3. Añade la address del contrato desplegado a la whitelist del Developer Portal (Settings → Advanced) para habilitar el patrocinio de gas.
+
+## Integración de memecoin PUF (custom ERC-20)
+
+- Define tu token en `src/lib/constants.ts` (MEMECOIN_CONFIG) con dirección, símbolo, decimales y URL de Quick Action `worldapp://mini-app?app_id=app_puf&path=app/token/<address>`.
+- Selecciona tokens de pago en `src/app/tournament/buy-in/page.tsx` y `src/app/tournament/[tournamentId]/page.tsx`; ambos muestran CTA para abrir el token en PUF cuando está disponible.
+- El servicio de pagos (`src/lib/paymentService.ts`) convierte montos a decimales y soporta WLD, USDC y el memecoin como tokens custom.
+- Los torneos pueden declararse por JSON (`src/config/tournaments.json`) incluyendo `acceptedTokens` con addresses soportadas.
+- El endpoint `/api/tournaments/create` valida que el buy-in y la lista de tokens pertenezcan a la whitelist local (WLD, USDC, MEMECOIN).
 
 ## Flujo MiniKit: Pay vs Send Transaction
 

@@ -1,6 +1,7 @@
-import { Tokens } from '@worldcoin/minikit-js';
+import tournamentsConfig from '@/config/tournaments.json';
 import { LeaderboardEntry, Tournament } from './types';
 import { payForTournament } from './paymentService';
+import { SupportedToken, resolveTokenFromAddress } from './constants';
 
 const BASE_PATH = '/api/tournaments';
 
@@ -36,8 +37,12 @@ export async function getTournamentDetails(tournamentId: string): Promise<Tourna
   return parseTournamentDates(data);
 }
 
-export async function joinTournament(tournamentId: string, token: Tokens, amount: number): Promise<void> {
-  await payForTournament(token, amount);
+export async function joinTournament(
+  tournamentId: string,
+  token: SupportedToken,
+  amount: number
+): Promise<void> {
+  await payForTournament(token, amount, tournamentId);
 
   const response = await fetch(`${BASE_PATH}/${tournamentId}/join`, {
     method: 'POST',
@@ -46,6 +51,29 @@ export async function joinTournament(tournamentId: string, token: Tokens, amount
   });
 
   await handleResponse<void>(response);
+}
+
+export function resolveAcceptedTokens(tokens: string[] | undefined): SupportedToken[] {
+  const addresses = tokens && tokens.length > 0 ? tokens : undefined;
+  const resolved = (addresses ?? []).map((token) => resolveTokenFromAddress(token)).filter(Boolean) as SupportedToken[];
+
+  return resolved.length > 0 ? resolved : ['WLD'];
+}
+
+export async function createTournamentFromConfig(configIndex: number) {
+  const config = tournamentsConfig.tournaments[configIndex];
+
+  if (!config) {
+    throw new Error('Configuración de torneo no encontrada');
+  }
+
+  const response = await fetch('/api/tournaments/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+
+  return handleResponse(response);
 }
 
 export async function getTournamentLeaderboard(

@@ -1,0 +1,28 @@
+{
+  "tournaments": [
+    {
+      "name": "Daily WLD Tournament",
+      "buyInToken": "0xWLD_ADDRESS",
+      "buyInAmount": "1000000000000000000",
+      "acceptedTokens": ["0xWLD_ADDRESS"],
+      "maxPlayers": 100,
+      "prizeDistribution": [60, 25, 15],
+      "prizePool": "0",
+      "startTime": "2024-08-01T00:00:00.000Z",
+      "endTime": "2024-08-01T12:00:00.000Z",
+      "tournamentId": "daily-wld"
+    },
+    {
+      "name": "Memecoin Madness",
+      "buyInToken": "0xYourMemecoinAddressHere",
+      "buyInAmount": "1000000000000000000000",
+      "acceptedTokens": ["0xYourMemecoinAddressHere", "0xWLD_ADDRESS"],
+      "maxPlayers": 50,
+      "prizeDistribution": [50, 30, 20],
+      "prizePool": "0",
+      "startTime": "2024-08-02T00:00:00.000Z",
+      "endTime": "2024-08-02T12:00:00.000Z",
+      "tournamentId": "memecoin-madness"
+    }
+  ]
+}

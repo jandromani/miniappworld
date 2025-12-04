@@ -3,17 +3,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { Tokens } from '@worldcoin/minikit-js';
 import { LeaderboardEntry, Tournament } from '@/lib/types';
 import {
   getTournamentDetails,
   getTournamentLeaderboard,
   joinTournament,
+  resolveAcceptedTokens,
 } from '@/lib/tournamentService';
+import {
+  MEMECOIN_CONFIG,
+  SUPPORTED_TOKENS,
+  SupportedToken,
+  getTokenDecimalsByAddress,
+  getTokenSymbolByAddress,
+  resolveTokenFromAddress,
+} from '@/lib/constants';
 
-function formatWei(amount: string) {
-  const value = Number(amount) / 1e18;
-  return value >= 0.01 ? `${value.toFixed(2)} (estimado)` : `${amount} wei`;
+function formatToken(amount: string, tokenAddress: string) {
+  const decimals = getTokenDecimalsByAddress(tokenAddress);
+  const value = Number(amount) / 10 ** decimals;
+  return value >= 0.01 ? `${value.toFixed(2)} ${getTokenSymbolByAddress(tokenAddress)}` : `${amount} (base)`;
 }
 
 function useTournamentData(tournamentId: string) {
@@ -51,10 +60,28 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
   const [joining, setJoining] = useState(false);
   const [hasJoined, setHasJoined] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [selectedToken, setSelectedToken] = useState<SupportedToken | null>(null);
+
+  const acceptedTokens = useMemo(() => {
+    if (!tournament) return [];
+    const tokens = tournament.acceptedTokens?.length
+      ? tournament.acceptedTokens
+      : [tournament.buyInToken];
+
+    const uniqueTokens = Array.from(new Set([tournament.buyInToken, ...tokens]));
+    return resolveAcceptedTokens(uniqueTokens);
+  }, [tournament]);
+
+  useEffect(() => {
+    if (!tournament) return;
+
+    const preferredToken = resolveTokenFromAddress(tournament.buyInToken);
+    setSelectedToken(preferredToken ?? acceptedTokens[0] ?? null);
+  }, [acceptedTokens, tournament]);
 
   const canJoin = useMemo(
-    () => tournament?.status === 'upcoming' && !joining,
-    [tournament?.status, joining]
+    () => tournament?.status === 'upcoming' && !joining && !!selectedToken,
+    [tournament?.status, joining, selectedToken]
   );
 
   const canPlay = useMemo(
@@ -63,16 +90,18 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
   );
 
   const handleJoin = async () => {
-    if (!tournament) return;
+    if (!tournament || !selectedToken) return;
 
     setJoining(true);
     setJoinError(null);
 
     try {
+      const amount =
+        Number(tournament.buyInAmount) / 10 ** SUPPORTED_TOKENS[selectedToken].decimals;
       await joinTournament(
         tournament.tournamentId,
-        tournament.buyInToken as Tokens,
-        Number(tournament.buyInAmount) / 1e18
+        selectedToken,
+        amount
       );
       setHasJoined(true);
     } catch (err) {
@@ -81,6 +110,10 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
     } finally {
       setJoining(false);
     }
+  };
+
+  const openTokenInPUF = () => {
+    window.location.href = MEMECOIN_CONFIG.pufUrl;
   };
 
   return (
@@ -102,7 +135,7 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
                 <p className="text-sm text-gray-500">Estado: {tournament.status}</p>
               </div>
               <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-700">
-                Prize pool: {formatWei(tournament.prizePool)}
+                Prize pool: {formatToken(tournament.prizePool, tournament.buyInToken)}
               </span>
             </div>
 
@@ -110,7 +143,7 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
               <div>
                 <dt className="text-gray-500">Buy-in</dt>
                 <dd className="font-semibold">
-                  {formatWei(tournament.buyInAmount)} {tournament.buyInToken}
+                  {formatToken(tournament.buyInAmount, tournament.buyInToken)}
                 </dd>
               </div>
               <div>
@@ -134,6 +167,35 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
             </dl>
 
             {joinError && <p className="text-sm text-red-600">{joinError}</p>}
+
+            <div className="space-y-2 rounded-lg border border-gray-100 bg-gray-50 p-3">
+              <p className="text-sm font-medium">Tokens aceptados</p>
+              <div className="flex flex-wrap gap-2">
+                {acceptedTokens.map((token) => (
+                  <button
+                    key={token}
+                    type="button"
+                    className={`rounded border px-3 py-2 text-sm transition ${
+                      selectedToken === token ? 'border-blue-600 bg-white' : 'border-gray-200'
+                    }`}
+                    onClick={() => setSelectedToken(token)}
+                    disabled={joining}
+                  >
+                    {SUPPORTED_TOKENS[token].symbol} — {SUPPORTED_TOKENS[token].name}
+                  </button>
+                ))}
+              </div>
+
+              {acceptedTokens.includes('MEMECOIN') && (
+                <button
+                  type="button"
+                  className="inline-flex w-fit items-center gap-2 rounded border border-amber-500 px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
+                  onClick={openTokenInPUF}
+                >
+                  💰 Comprar {MEMECOIN_CONFIG.symbol} en PUF
+                </button>
+              )}
+            </div>
 
             <div className="flex gap-3">
               <button
@@ -189,7 +251,9 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
                       <td className="py-2 pr-2">{entry.rank}</td>
                       <td className="py-2 pr-2">{entry.username}</td>
                       <td className="py-2 pr-2">{entry.score}</td>
-                      <td className="py-2 pr-2">{entry.prize ? formatWei(entry.prize) : '-'}</td>
+                      <td className="py-2 pr-2">
+                        {entry.prize ? formatToken(entry.prize, tournament.buyInToken) : '-'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
