@@ -83,7 +83,7 @@ async function confirmPayment(
   const result = await response.json();
 
   if (!response.ok || !result.success) {
-    throw new Error('Pago no verificado');
+    throw new Error(result?.message ?? 'Pago no verificado');
   }
 
   return result;
