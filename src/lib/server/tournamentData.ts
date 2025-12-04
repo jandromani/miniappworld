@@ -1,9 +1,20 @@
 import tournamentsConfig from '@/config/tournaments.json';
 import { SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
+import {
+  addTournamentParticipant,
+  findTournamentRecord,
+  listTournamentParticipants,
+  listTournamentRecords,
+  listTournamentResults,
+  normalizeTournamentRecord,
+  recordTournament,
+  TournamentRecord,
+  upsertTournamentResult,
+} from '@/lib/database';
 import { LeaderboardEntry, Tournament } from '@/lib/types';
+import { normalizeTokenIdentifier } from '../tokenNormalization';
 
-const tournamentStore = new Map<string, Tournament>();
-const leaderboardStore = new Map<string, LeaderboardEntry[]>();
+let seeded = false;
 
 function resolveTournamentStatus(startTime: Date, endTime: Date): Tournament['status'] {
   const now = new Date();
@@ -13,72 +24,79 @@ function resolveTournamentStatus(startTime: Date, endTime: Date): Tournament['st
   return 'finished';
 }
 
-function parseConfigTournament(config: (typeof tournamentsConfig)['tournaments'][number]): Tournament {
-  const startTime = new Date(config.startTime);
-  const endTime = new Date(config.endTime);
-
+function toTournamentModel(record: TournamentRecord, currentPlayers: number): Tournament {
+  const startTime = new Date(record.start_time);
+  const endTime = new Date(record.end_time);
   return {
-    tournamentId: config.tournamentId,
-    name: config.name,
-    buyInToken: config.buyInToken,
-    acceptedTokens: config.acceptedTokens?.length ? config.acceptedTokens : [config.buyInToken],
-    buyInAmount: config.buyInAmount,
-    prizePool: config.prizePool ?? '0',
-    maxPlayers: config.maxPlayers,
-    currentPlayers: 0,
+    tournamentId: record.tournament_id,
+    name: record.name,
+    buyInToken: record.buy_in_token,
+    acceptedTokens: record.accepted_tokens,
+    buyInAmount: record.buy_in_amount,
+    prizePool: record.prize_pool,
+    maxPlayers: record.max_players,
+    currentPlayers,
     startTime,
     endTime,
     status: resolveTournamentStatus(startTime, endTime),
-    prizeDistribution: config.prizeDistribution,
+    prizeDistribution: record.prize_distribution,
   };
 }
 
-function seedLeaderboards() {
-  tournamentsConfig.tournaments.forEach((config, index) => {
-    const baseScore = 1500 - index * 100;
-    const entries: LeaderboardEntry[] = Array.from({ length: 3 }, (_, i) => ({
-      rank: i + 1,
-      userId: `${config.tournamentId}-user-${i + 1}`,
-      username: `Jugador ${i + 1}`,
-      walletAddress: SUPPORTED_TOKENS.WLD.address,
-      score: baseScore - i * 75,
-    }));
+async function seedTournaments() {
+  if (seeded) return;
+  const existing = await listTournamentRecords();
 
-    leaderboardStore.set(config.tournamentId, entries);
+  const existingIds = new Set(existing.map((entry) => entry.tournament_id));
+  const seeds = tournamentsConfig.tournaments.map((config, index) => {
+    const baseRecord: TournamentRecord = normalizeTournamentRecord({
+      tournament_id: config.tournamentId,
+      name: config.name,
+      buy_in_token: config.buyInToken,
+      accepted_tokens: config.acceptedTokens?.length ? config.acceptedTokens : [config.buyInToken],
+      buy_in_amount: config.buyInAmount,
+      prize_pool: config.prizePool ?? '0',
+      max_players: config.maxPlayers,
+      start_time: config.startTime,
+      end_time: config.endTime,
+      status: 'upcoming',
+      prize_distribution: config.prizeDistribution,
+    });
+
+    return { baseRecord, index };
   });
+
+  await Promise.all(
+    seeds.map(async ({ baseRecord, index }) => {
+      if (!existingIds.has(baseRecord.tournament_id)) {
+        await recordTournament(baseRecord);
+        // Seed leaderboard baseline so leaderboards are not empty
+        const baseScore = 1500 - index * 100;
+        await upsertTournamentResult({
+          tournament_id: baseRecord.tournament_id,
+          user_id: `${baseRecord.tournament_id}-user-1`,
+          score: baseScore,
+          prize: undefined,
+        });
+        await upsertTournamentResult({
+          tournament_id: baseRecord.tournament_id,
+          user_id: `${baseRecord.tournament_id}-user-2`,
+          score: baseScore - 50,
+          prize: undefined,
+        });
+      }
+    })
+  );
+
+  seeded = true;
 }
-
-function initializeStore() {
-  tournamentsConfig.tournaments.forEach((config) => {
-    const parsed = parseConfigTournament(config);
-    tournamentStore.set(parsed.tournamentId, parsed);
-  });
-
-  seedLeaderboards();
-}
-
-initializeStore();
 
 function calculatePrizeAmount(prizePool: string, percentage: number) {
   const pool = BigInt(prizePool ?? '0');
   return ((pool * BigInt(percentage)) / BigInt(100)).toString();
 }
 
-function withDynamicFields(tournament: Tournament): Tournament {
-  const leaderboardSize = leaderboardStore.get(tournament.tournamentId)?.length ?? 0;
-  const startTime = new Date(tournament.startTime);
-  const endTime = new Date(tournament.endTime);
-
-  return {
-    ...tournament,
-    currentPlayers: Math.max(tournament.currentPlayers, leaderboardSize),
-    startTime,
-    endTime,
-    status: resolveTournamentStatus(startTime, endTime),
-  };
-}
-
-export function serializeTournament(tournament: Tournament) {
+export async function serializeTournament(tournament: Tournament) {
   return {
     ...tournament,
     startTime: tournament.startTime.toISOString(),
@@ -86,8 +104,14 @@ export function serializeTournament(tournament: Tournament) {
   };
 }
 
-export function listTournaments(statusFilters?: string[]): Tournament[] {
-  const tournaments = Array.from(tournamentStore.values()).map(withDynamicFields);
+async function toTournamentList(statusFilters?: string[]) {
+  await seedTournaments();
+  const records = await listTournamentRecords();
+  const participants = await Promise.all(records.map((entry) => listTournamentParticipants(entry.tournament_id)));
+
+  const tournaments = records.map((record, index) =>
+    toTournamentModel(record, participants[index]?.length ?? 0)
+  );
 
   if (!statusFilters?.length) return tournaments;
 
@@ -96,69 +120,100 @@ export function listTournaments(statusFilters?: string[]): Tournament[] {
   return tournaments.filter((tournament) => normalized.includes(tournament.status.toLowerCase()));
 }
 
-export function getTournament(tournamentId: string): Tournament | null {
-  const tournament = tournamentStore.get(tournamentId);
-  if (!tournament) return null;
-
-  return withDynamicFields(tournament);
+export async function listTournaments(statusFilters?: string[]) {
+  return toTournamentList(statusFilters);
 }
 
-export function getLeaderboardEntries(tournamentId: string, prizePool: string, distribution: number[]): LeaderboardEntry[] {
-  const entries = leaderboardStore.get(tournamentId) ?? [];
+export async function getTournament(tournamentId: string): Promise<Tournament | null> {
+  await seedTournaments();
+  const record = await findTournamentRecord(tournamentId);
+  if (!record) return null;
+
+  const participants = await listTournamentParticipants(tournamentId);
+  return toTournamentModel(record, participants.length);
+}
+
+export async function getLeaderboardEntries(
+  tournamentId: string,
+  prizePool: string,
+  distribution: number[]
+): Promise<LeaderboardEntry[]> {
+  await seedTournaments();
+  const entries = await listTournamentResults(tournamentId);
 
   return entries
     .slice()
     .sort((a, b) => b.score - a.score)
     .map((entry, index) => ({
-      ...entry,
       rank: index + 1,
-      prize: index < distribution.length ? calculatePrizeAmount(prizePool, distribution[index]) : undefined,
+      userId: entry.user_id,
+      username: entry.user_id,
+      walletAddress: SUPPORTED_TOKENS.WLD.address,
+      score: entry.score,
+      prize: index < distribution.length ? calculatePrizeAmount(prizePool, distribution[index]) : entry.prize,
     }));
 }
 
-export function appendLeaderboardEntry(tournamentId: string, entry: Omit<LeaderboardEntry, 'rank'>) {
-  const current = leaderboardStore.get(tournamentId) ?? [];
-  const existsIndex = current.findIndex((item) => item.userId === entry.userId);
-  if (existsIndex >= 0) {
-    current[existsIndex] = { ...current[existsIndex], ...entry };
-    leaderboardStore.set(tournamentId, current);
-    return;
-  }
-
-  leaderboardStore.set(tournamentId, [...current, entry]);
+export async function appendLeaderboardEntry(tournamentId: string, entry: Omit<LeaderboardEntry, 'rank'>) {
+  await seedTournaments();
+  await upsertTournamentResult({
+    tournament_id: tournamentId,
+    user_id: entry.userId,
+    score: entry.score,
+    prize: entry.prize,
+  });
 }
 
-export function incrementTournamentPool(tournament: Tournament) {
-  const stored = tournamentStore.get(tournament.tournamentId);
-  if (!stored) return tournament;
+export async function incrementTournamentPool(tournament: Tournament) {
+  await seedTournaments();
+  const record = await findTournamentRecord(tournament.tournamentId);
+  if (!record) return tournament;
 
-  const newPool = (BigInt(stored.prizePool ?? '0') + BigInt(stored.buyInAmount)).toString();
-  const updated = { ...stored, prizePool: newPool, currentPlayers: stored.currentPlayers + 1 };
-  tournamentStore.set(tournament.tournamentId, updated);
-  return withDynamicFields(updated);
+  const newPool = (BigInt(record.prize_pool ?? '0') + BigInt(record.buy_in_amount)).toString();
+  const updated: TournamentRecord = { ...record, prize_pool: newPool };
+  await recordTournament(updated);
+  const participants = await listTournamentParticipants(tournament.tournamentId);
+  return toTournamentModel(updated, participants.length);
 }
 
 export function validateTokenForTournament(
   tournament: Tournament,
   token: SupportedToken,
-  amount: number
+  amount: number | string
 ): { valid: boolean; message?: string } {
   const tokenConfig = SUPPORTED_TOKENS[token];
   if (!tokenConfig) return { valid: false, message: 'Token no soportado' };
 
   const accepted = tournament.acceptedTokens?.length ? tournament.acceptedTokens : [tournament.buyInToken];
-  const lowerAccepted = accepted.map((addr) => addr.toLowerCase());
+  const lowerAccepted = accepted.map((addr) => normalizeTokenIdentifier(addr));
 
-  if (!lowerAccepted.includes(tokenConfig.address.toLowerCase())) {
+  if (!lowerAccepted.includes(normalizeTokenIdentifier(tokenConfig.address))) {
     return { valid: false, message: 'El token seleccionado no es aceptado para este torneo' };
   }
 
-  const requiredAmount = Number(tournament.buyInAmount) / 10 ** tokenConfig.decimals;
-  const isCorrectAmount = Math.abs(requiredAmount - Number(amount)) < 1e-9;
+  const normalizedAmount = typeof amount === 'string' ? amount : amount.toString();
+  const expected = BigInt(tournament.buyInAmount);
+  const incoming = BigInt(normalizedAmount);
 
-  if (!isCorrectAmount) {
+  if (expected !== incoming) {
     return { valid: false, message: 'El buy-in no coincide con el monto requerido' };
   }
 
   return { valid: true };
+}
+
+export async function addParticipantRecord(tournamentId: string, userId: string, paymentReference: string) {
+  await seedTournaments();
+  await addTournamentParticipant({
+    tournament_id: tournamentId,
+    user_id: userId,
+    payment_reference: paymentReference,
+    joined_at: new Date().toISOString(),
+    status: 'joined',
+  });
+}
+
+export async function participantExists(tournamentId: string, userId: string) {
+  const participants = await listTournamentParticipants(tournamentId);
+  return participants.some((entry) => entry.user_id === userId);
 }

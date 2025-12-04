@@ -5,7 +5,8 @@ export async function GET(req: NextRequest) {
   const statusParam = req.nextUrl.searchParams.get('status');
   const statusFilters = statusParam?.split(',').filter(Boolean);
 
-  const tournaments = listTournaments(statusFilters);
+  const tournaments = await listTournaments(statusFilters);
+  const serialized = await Promise.all(tournaments.map((tournament) => serializeTournament(tournament)));
 
-  return NextResponse.json(tournaments.map(serializeTournament));
+  return NextResponse.json(serialized);
 }

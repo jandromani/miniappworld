@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'crypto';
 import { verifyCloudProof } from '@worldcoin/minikit-js';
-import { createIdentityRecord, getIdentityByNullifier } from '@/lib/identityStore';
+import {
+  findWorldIdVerificationByNullifier,
+  insertWorldIdVerification,
+} from '@/lib/database';
 
 const SESSION_COOKIE = 'session_token';
 
 export async function POST(req: NextRequest) {
   try {
-    const { proof, nullifier_hash, merkle_root } = await req.json();
+    const { proof, nullifier_hash, merkle_root, wallet_address, user_id, action, verification_level } =
+      await req.json();
 
     if (!proof || !nullifier_hash || !merkle_root) {
       console.warn('[verify-world-id] Solicitud inválida', { nullifier_hash });
@@ -27,27 +32,28 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const incomingSession = req.cookies.get(SESSION_COOKIE)?.value;
-    const existingIdentity = getIdentityByNullifier(nullifier_hash);
+    const existingIdentity = await findWorldIdVerificationByNullifier(nullifier_hash);
 
-    if (existingIdentity && existingIdentity.sessionToken !== incomingSession) {
+    if (existingIdentity) {
       console.warn('[verify-world-id] nullifier_hash ya registrado', {
         nullifier_hash,
-        existingSession: existingIdentity.sessionToken,
+        existingUser: existingIdentity.user_id,
       });
       return NextResponse.json(
         {
           success: false,
-          error: 'nullifier_hash ya está asociado a otra sesión',
+          error: 'Esta identidad ya fue utilizada anteriormente',
         },
         { status: 409 }
       );
     }
 
+    const actionName = action ?? 'trivia_game_access';
+
     const verifyRes = await verifyCloudProof(
-      { proof, nullifier_hash, merkle_root, verification_level: 'orb' },
+      { proof, nullifier_hash, merkle_root, verification_level: verification_level ?? 'orb' },
       process.env.APP_ID as `app_${string}`,
-      'trivia_game_access'
+      actionName
     );
 
     if (!verifyRes.success) {
@@ -61,21 +67,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const identityRecord =
-      existingIdentity ??
-      createIdentityRecord({
-        proof,
-        merkle_root,
-        nullifier_hash,
-        userId: nullifier_hash,
-      });
+    const sessionToken = randomUUID();
+    const userId = user_id ?? nullifier_hash;
 
-    const sessionToken = identityRecord.sessionToken;
+    const identityRecord = await insertWorldIdVerification({
+      action: actionName,
+      merkle_root,
+      nullifier_hash,
+      verification_level: verification_level ?? 'orb',
+      wallet_address,
+      user_id: userId,
+    });
     const response = NextResponse.json({
       success: true,
-      userId: identityRecord.userId,
+      userId: identityRecord.user_id,
       nullifier_hash: identityRecord.nullifier_hash,
-      createdAt: identityRecord.createdAt,
+      createdAt: identityRecord.created_at,
     });
 
     response.cookies.set(SESSION_COOKIE, sessionToken, {
@@ -87,12 +94,20 @@ export async function POST(req: NextRequest) {
     });
 
     console.info('[verify-world-id] Verificación exitosa', {
-      userId: identityRecord.userId,
+      userId: identityRecord.user_id,
       sessionToken,
     });
 
     return response;
   } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'DUPLICATE_NULLIFIER') {
+      return NextResponse.json(
+        { success: false, error: 'Esta identidad ya fue utilizada anteriormente' },
+        { status: 409 }
+      );
+    }
+
     console.error('[verify-world-id] Error inesperado', error);
     return NextResponse.json(
       { success: false, error: 'Error interno al verificar World ID' },
