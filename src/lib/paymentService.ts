@@ -5,6 +5,12 @@ import {
   Tokens,
   tokenToDecimals,
 } from '@worldcoin/minikit-js';
+import {
+  MEMECOIN_CONFIG,
+  SUPPORTED_TOKENS,
+  SupportedToken,
+  TOURNAMENT_CONTRACT_ADDRESS,
+} from './constants';
 import { payWithMiniKit } from './miniKitClient';
 
 const RECEIVER_ADDRESS = process.env.NEXT_PUBLIC_RECEIVER_ADDRESS || '0xYourAddress';
@@ -14,8 +20,14 @@ type PaymentType = 'quick_match' | 'tournament';
 type InitiatePaymentPayload = {
   reference: string;
   type: PaymentType;
-  token?: Tokens;
+  token?: SupportedToken;
   amount?: number;
+  tournamentId?: string;
+};
+
+type TokenConfig = {
+  symbol: string;
+  token_amount: string;
 };
 
 const PAY_ERROR_MESSAGES: Record<string, string> = {
@@ -24,6 +36,22 @@ const PAY_ERROR_MESSAGES: Record<string, string> = {
   transaction_failed: 'Transacción fallida, intenta de nuevo',
   generic_error: 'Error inesperado, contacta soporte',
 };
+
+function getTokenConfig(token: SupportedToken, amount: number): TokenConfig {
+  const config = SUPPORTED_TOKENS[token];
+
+  if (token === 'MEMECOIN') {
+    return {
+      symbol: MEMECOIN_CONFIG.address,
+      token_amount: (amount * 10 ** config.decimals).toString(),
+    };
+  }
+
+  return {
+    symbol: config.symbol,
+    token_amount: tokenToDecimals(amount, config.symbol as Tokens).toString(),
+  };
+}
 
 async function initiatePayment(body: InitiatePaymentPayload) {
   const response = await fetch('/api/initiate-payment', {
@@ -63,24 +91,19 @@ async function confirmPayment(
 
 async function executePayCommand({
   reference,
-  token,
-  amount,
+  tokens,
   description,
+  to,
 }: {
   reference: string;
-  token: Tokens;
-  amount: number;
+  tokens: TokenConfig[];
   description: string;
+  to: string;
 }) {
   const finalPayload = await payWithMiniKit({
     reference,
-    to: RECEIVER_ADDRESS,
-    tokens: [
-      {
-        symbol: token,
-        token_amount: tokenToDecimals(amount, token).toString(),
-      },
-    ],
+    to,
+    tokens,
     description,
   });
 
@@ -101,9 +124,9 @@ export async function payForQuickMatch() {
 
   const finalPayload = (await executePayCommand({
     reference,
-    token: Tokens.WLD,
-    amount: 1,
+    tokens: [getTokenConfig('WLD', 1)],
     description: 'Entrada a partida rápida',
+    to: RECEIVER_ADDRESS,
   })) as MiniAppPaymentSuccessPayload;
 
   return confirmPayment(finalPayload, reference);
@@ -112,16 +135,18 @@ export async function payForQuickMatch() {
 /**
  * Pagar por torneo (buy-in configurable)
  */
-export async function payForTournament(token: Tokens, amount: number) {
+export async function payForTournament(token: SupportedToken, amount: number, tournamentId?: string) {
   const reference = uuidv4().replace(/-/g, '');
 
-  await initiatePayment({ reference, type: 'tournament', token, amount });
+  await initiatePayment({ reference, type: 'tournament', token, amount, tournamentId });
+
+  const tokenConfig = getTokenConfig(token, amount);
 
   const finalPayload = (await executePayCommand({
     reference,
-    token,
-    amount,
-    description: `Entrada a torneo (${amount} ${token})`,
+    tokens: [tokenConfig],
+    description: `Entrada a torneo (${amount} ${SUPPORTED_TOKENS[token].symbol})`,
+    to: TOURNAMENT_CONTRACT_ADDRESS,
   })) as MiniAppPaymentSuccessPayload;
 
   return confirmPayment(finalPayload, reference);

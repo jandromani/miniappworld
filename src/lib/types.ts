@@ -21,7 +21,8 @@ export type GameSession = {
 export interface Tournament {
   tournamentId: string;
   name: string;
-  buyInToken: 'WLD' | 'USDC' | 'MEMECOIN';
+  buyInToken: string;
+  acceptedTokens?: string[];
   buyInAmount: string;
   prizePool: string;
   maxPlayers: number;

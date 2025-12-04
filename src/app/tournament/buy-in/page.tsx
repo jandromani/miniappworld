@@ -1,27 +1,23 @@
 'use client';
 
 import { useState } from 'react';
-import { Tokens } from '@worldcoin/minikit-js';
 import { useRouter } from 'next/navigation';
+import { MEMECOIN_CONFIG, SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
 import { payForQuickMatch, payForTournament } from '@/lib/paymentService';
 
-const tokenOptions = [
-  { label: 'Worldcoin (WLD)', value: Tokens.WLD },
-  { label: 'USD Coin (USDC)', value: Tokens.USDC },
-  { label: 'Token personalizado (ERC-20)', value: 'CUSTOM' },
-];
+const BUY_IN_DEMO_TOURNAMENT = 'demo-tournament';
+
+function openTokenInPUF() {
+  window.location.href = MEMECOIN_CONFIG.pufUrl;
+}
 
 export default function TournamentBuyInPage() {
   const router = useRouter();
   const [mode, setMode] = useState<'quick' | 'tournament'>('quick');
-  const [selectedToken, setSelectedToken] = useState<Tokens | 'CUSTOM'>(Tokens.WLD);
-  const [customTokenAddress, setCustomTokenAddress] = useState('');
+  const [selectedToken, setSelectedToken] = useState<SupportedToken>('WLD');
   const [amount, setAmount] = useState(5);
   const [isPaying, setIsPaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const tournamentToken: Tokens =
-    selectedToken === 'CUSTOM' ? (customTokenAddress as Tokens) : (selectedToken as Tokens);
 
   const handlePayment = async () => {
     setError(null);
@@ -34,15 +30,11 @@ export default function TournamentBuyInPage() {
         return;
       }
 
-      if (!tournamentToken) {
-        throw new Error('Selecciona un token para el torneo');
-      }
-
       if (amount <= 0) {
         throw new Error('El monto debe ser mayor a 0');
       }
 
-      await payForTournament(tournamentToken, amount);
+      await payForTournament(selectedToken, amount, BUY_IN_DEMO_TOURNAMENT);
       router.push('/tournament/registro');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error inesperado al procesar el pago';
@@ -92,27 +84,30 @@ export default function TournamentBuyInPage() {
         <section className="space-y-4 rounded-lg border border-gray-200 p-4">
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">Token</label>
-            <select
-              className="rounded border px-3 py-2"
-              value={selectedToken}
-              onChange={(e) => setSelectedToken(e.target.value as Tokens | 'CUSTOM')}
-              disabled={isPaying}
-            >
-              {tokenOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(SUPPORTED_TOKENS).map(([key, config]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`rounded border px-3 py-2 text-sm transition ${
+                    selectedToken === key ? 'border-blue-600 bg-blue-50' : 'border-gray-200'
+                  }`}
+                  onClick={() => setSelectedToken(key as SupportedToken)}
+                  disabled={isPaying}
+                >
+                  {config.symbol} — {config.name}
+                </button>
               ))}
-            </select>
+            </div>
 
-            {selectedToken === 'CUSTOM' && (
-              <input
-                className="rounded border px-3 py-2"
-                placeholder="0xTokenAddress"
-                value={customTokenAddress}
-                onChange={(e) => setCustomTokenAddress(e.target.value)}
-                disabled={isPaying}
-              />
+            {selectedToken === 'MEMECOIN' && (
+              <button
+                type="button"
+                className="inline-flex w-fit items-center gap-2 rounded border border-amber-500 px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
+                onClick={openTokenInPUF}
+              >
+                💰 Comprar {MEMECOIN_CONFIG.symbol} en PUF
+              </button>
             )}
           </div>
 
@@ -137,7 +132,7 @@ export default function TournamentBuyInPage() {
       <button
         type="button"
         onClick={handlePayment}
-        disabled={isPaying || (mode === 'tournament' && selectedToken === 'CUSTOM' && !customTokenAddress)}
+        disabled={isPaying}
         className="rounded-lg bg-blue-600 px-4 py-3 text-white transition hover:bg-blue-700 disabled:opacity-60"
       >
         {isPaying ? 'Procesando...' : mode === 'quick' ? 'Pagar y Jugar (1 WLD)' : 'Pagar e Inscribirse'}

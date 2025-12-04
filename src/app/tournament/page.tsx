@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Tournament } from '@/lib/types';
 import { getActiveTournaments } from '@/lib/tournamentService';
+import { getTokenDecimalsByAddress, getTokenSymbolByAddress } from '@/lib/constants';
 
 const statusLabels: Record<Tournament['status'], string> = {
   upcoming: 'Próximo',
@@ -11,8 +12,9 @@ const statusLabels: Record<Tournament['status'], string> = {
   finished: 'Finalizado',
 };
 
-function formatWei(amount: string) {
-  const value = Number(amount) / 1e18;
+function formatTokenAmount(amount: string, tokenAddress: string) {
+  const decimals = getTokenDecimalsByAddress(tokenAddress);
+  const value = Number(amount) / 10 ** decimals;
   return value >= 0.01 ? value.toFixed(2) : amount;
 }
 
@@ -60,14 +62,18 @@ export default function TournamentPage() {
                 <p className="text-sm text-gray-500">{statusLabels[tournament.status]}</p>
               </div>
               <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
-                Buy-in: {formatWei(tournament.buyInAmount)} {tournament.buyInToken}
+                Buy-in: {formatTokenAmount(tournament.buyInAmount, tournament.buyInToken)}{' '}
+                {getTokenSymbolByAddress(tournament.buyInToken)}
               </span>
             </div>
 
             <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
               <div>
                 <dt className="text-gray-500">Prize pool</dt>
-                <dd className="font-semibold">{formatWei(tournament.prizePool)} {tournament.buyInToken}</dd>
+                <dd className="font-semibold">
+                  {formatTokenAmount(tournament.prizePool, tournament.buyInToken)}{' '}
+                  {getTokenSymbolByAddress(tournament.buyInToken)}
+                </dd>
               </div>
               <div>
                 <dt className="text-gray-500">Jugadores</dt>
