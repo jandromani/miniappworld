@@ -39,11 +39,14 @@ export default function Home() {
           }),
         });
 
-        if (res.ok) {
-          localStorage.setItem('userId', finalPayload.nullifier_hash);
-          setUserId(finalPayload.nullifier_hash);
+        const data = await res.json();
+
+        if (res.ok && data?.success) {
+          localStorage.setItem('userId', data.userId);
+          setUserId(data.userId);
         } else {
-          alert('Error al verificar World ID');
+          const message = data?.error ?? 'Error al verificar World ID';
+          alert(message);
         }
       }
     } catch (error) {
