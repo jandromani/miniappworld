@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createPayment, findPayment, PaymentRecord } from '@/lib/paymentStore';
+import { createPaymentRecord, findPaymentByReference } from '@/lib/database';
+import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
+import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 
 export async function POST(req: NextRequest) {
-  const { reference, type, token, amount, tournamentId } = await req.json();
+  const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
+  const userId = req.headers.get('x-user-id') ?? bodyUserId ?? 'anonymous';
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -25,25 +28,29 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const existingPayment = await findPayment(reference);
+  const existingPayment = await findPaymentByReference(reference);
 
   if (existingPayment) {
-    return NextResponse.json(
-      { success: false, message: 'Referencia duplicada' },
-      { status: 400 }
-    );
+    return NextResponse.json({ success: true, reference, tournamentId: existingPayment.tournament_id });
   }
 
-  const record: Omit<PaymentRecord, 'createdAt' | 'updatedAt'> = {
-    reference,
-    type,
-    token,
-    amount,
-    status: 'pending',
-    tournamentId,
-  };
+  const normalizedToken = token
+    ? normalizeTokenIdentifier(token)
+    : normalizeTokenIdentifier(SUPPORTED_TOKENS.WLD.address);
+  const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
+  const decimals = SUPPORTED_TOKENS[tokenKey].decimals;
+  const tokenAmount = amount !== undefined ? BigInt(Math.round(Number(amount) * 10 ** decimals)).toString() : '0';
 
-  await createPayment(record);
+  await createPaymentRecord({
+    reference,
+    type: type === 'tournament' ? 'tournament' : 'quick_match',
+    token_address: normalizedToken ?? '',
+    token_amount: tokenAmount,
+    tournament_id: tournamentId,
+    recipient_address: process.env.NEXT_PUBLIC_RECEIVER_ADDRESS,
+    user_id: userId,
+    wallet_address: walletAddress,
+  });
 
   console.log('Pago iniciado:', { reference, type, token, amount, tournamentId });
 

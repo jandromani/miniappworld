@@ -2,9 +2,9 @@
   "tournaments": [
     {
       "name": "Daily WLD Tournament",
-      "buyInToken": "0xWLD_ADDRESS",
+      "buyInToken": "0x1FfE36E4C7F1cdd192d08F7569bB31Ac5D2B6C2f",
       "buyInAmount": "1000000000000000000",
-      "acceptedTokens": ["0xWLD_ADDRESS"],
+      "acceptedTokens": ["0x1FfE36E4C7F1cdd192d08F7569bB31Ac5D2B6C2f"],
       "maxPlayers": 100,
       "prizeDistribution": [60, 25, 15],
       "prizePool": "0",
@@ -14,9 +14,9 @@
     },
     {
       "name": "Memecoin Madness",
-      "buyInToken": "0xYourMemecoinAddressHere",
+      "buyInToken": "0xA9B68b83c130b67D2E0c5d44EeE466D70c1B2de4",
       "buyInAmount": "1000000000000000000000",
-      "acceptedTokens": ["0xYourMemecoinAddressHere", "0xWLD_ADDRESS"],
+      "acceptedTokens": ["0xA9B68b83c130b67D2E0c5d44EeE466D70c1B2de4", "0x1FfE36E4C7F1cdd192d08F7569bB31Ac5D2B6C2f"],
       "maxPlayers": 50,
       "prizeDistribution": [50, 30, 20],
       "prizePool": "0",

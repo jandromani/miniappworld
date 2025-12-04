@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { MiniAppPaymentSuccessPayload } from '@worldcoin/minikit-js';
-import { findPayment, updatePayment } from '@/lib/paymentStore';
+import { findPaymentByReference, updatePaymentStatus } from '@/lib/database';
+import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
+import { sendNotification } from '@/lib/notificationService';
+
+function normalizeTokenAmount(value: unknown): bigint {
+  const asString = typeof value === 'string' ? value : value?.toString?.();
+  if (!asString) {
+    throw new Error('Token amount inválido');
+  }
+
+  return BigInt(asString);
+}
 
 export async function POST(req: NextRequest) {
   const { payload, reference } = (await req.json()) as {
@@ -19,7 +30,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: 'Pago rechazado' }, { status: 400 });
   }
 
-  const storedPayment = await findPayment(reference);
+  const storedPayment = await findPaymentByReference(reference);
 
   if (!storedPayment) {
     return NextResponse.json({ success: false, message: 'Referencia no encontrada' }, { status: 400 });
@@ -60,9 +71,8 @@ export async function POST(req: NextRequest) {
   const transactionReference = transaction.reference || transaction.transaction_reference;
 
   if (transactionReference !== reference) {
-    await updatePayment(reference, {
-      status: 'failed',
-      lastError: 'Referencia devuelta no coincide con el pago iniciado',
+    await updatePaymentStatus(reference, 'failed', {
+      reason: 'Referencia devuelta no coincide con el pago iniciado',
     });
 
     return NextResponse.json(
@@ -78,12 +88,25 @@ export async function POST(req: NextRequest) {
     transaction.token || transaction.token_symbol || transaction.payment_token || transaction.asset;
   const transactionAmountRaw =
     transaction.amount || transaction.token_amount || transaction.tokens?.[0]?.amount || transaction.tokens?.[0]?.token_amount;
-  const transactionAmount = transactionAmountRaw !== undefined ? Number(transactionAmountRaw) : undefined;
+  let transactionAmount: bigint | undefined;
+  try {
+    transactionAmount = transactionAmountRaw !== undefined ? normalizeTokenAmount(transactionAmountRaw) : undefined;
+  } catch (error) {
+    await updatePaymentStatus(reference, 'failed', { reason: 'Monto devuelto no es válido' });
+    return NextResponse.json({ success: false, message: 'Monto de la transacción no válido' }, { status: 400 });
+  }
 
-  if (storedPayment.token && transactionToken && storedPayment.token !== transactionToken) {
-    await updatePayment(reference, {
-      status: 'failed',
-      lastError: 'Token no coincide con el pago esperado',
+  const normalizedExpectedToken = storedPayment.token_address
+    ? normalizeTokenIdentifier(storedPayment.token_address)
+    : undefined;
+
+  if (
+    normalizedExpectedToken &&
+    transactionToken &&
+    !tokensMatch(normalizedExpectedToken, normalizeTokenIdentifier(transactionToken))
+  ) {
+    await updatePaymentStatus(reference, 'failed', {
+      reason: 'Token no coincide con el pago esperado',
     });
 
     return NextResponse.json(
@@ -95,29 +118,25 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (
-    storedPayment.amount !== undefined &&
-    transactionAmount !== undefined &&
-    Number.isFinite(transactionAmount) &&
-    storedPayment.amount !== transactionAmount
-  ) {
-    await updatePayment(reference, {
-      status: 'failed',
-      lastError: 'Monto no coincide con el pago esperado',
-    });
+  if (transactionAmount !== undefined && storedPayment.token_amount) {
+    const expected = BigInt(storedPayment.token_amount);
+    if (expected !== transactionAmount) {
+      await updatePaymentStatus(reference, 'failed', {
+        reason: 'Monto no coincide con el pago esperado',
+      });
 
-    return NextResponse.json(
-      { success: false, message: 'El monto cobrado no coincide con el pago solicitado' },
-      { status: 400 }
-    );
+      return NextResponse.json(
+        { success: false, message: 'El monto cobrado no coincide con el pago solicitado' },
+        { status: 400 }
+      );
+    }
   }
 
   if (storedPayment.type === 'tournament') {
     const transactionTournamentId = transaction.tournamentId || transaction.tournament_id || transaction.metadata?.tournamentId;
-    if (storedPayment.tournamentId && transactionTournamentId && storedPayment.tournamentId !== transactionTournamentId) {
-      await updatePayment(reference, {
-        status: 'failed',
-        lastError: 'Referencia de torneo no coincide con el flujo solicitado',
+    if (storedPayment.tournament_id && transactionTournamentId && storedPayment.tournament_id !== transactionTournamentId) {
+      await updatePaymentStatus(reference, 'failed', {
+        reason: 'Referencia de torneo no coincide con el flujo solicitado',
       });
 
       return NextResponse.json(
@@ -133,7 +152,21 @@ export async function POST(req: NextRequest) {
   const isSuccessful = ['success', 'confirmed'].includes(transactionStatus);
 
   if (isSuccessful) {
-    await updatePayment(reference, { status: 'confirmed', lastError: undefined });
+    const confirmedAt = new Date().toISOString();
+    await updatePaymentStatus(reference, 'confirmed', {
+      transaction_id: payload.transaction_id,
+      confirmed_at: confirmedAt,
+    });
+
+    if (storedPayment.wallet_address) {
+      await sendNotification({
+        walletAddresses: [storedPayment.wallet_address],
+        title: 'Pago confirmado',
+        message: 'Pago confirmado, ya puedes unirte al torneo',
+        miniAppPath: storedPayment.tournament_id ? `/tournament/${storedPayment.tournament_id}` : '/tournament',
+      });
+    }
+
     return NextResponse.json({ success: true, message: 'Pago confirmado' });
   }
 
@@ -145,7 +178,7 @@ export async function POST(req: NextRequest) {
     transaction_id: payload.transaction_id,
   });
 
-  await updatePayment(reference, { status: 'failed', lastError: failureMessage });
+  await updatePaymentStatus(reference, 'failed', { reason: failureMessage });
 
   return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
 }
