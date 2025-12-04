@@ -37,6 +37,10 @@ World ID y `sendHapticFeedback` para feedback táctil.
 - `/game`: Juego de trivia con 15 preguntas, temporizador y comodines (50/50, salto, público).
 - `/leaderboard`: Tabla de clasificación y guía para notificaciones.
 
+## Diseño funcional
+- Consulta el desglose completo de la Fase 1 (pantallas, tipos y comandos MiniKit) en
+  `docs/fase1-functional-design.md`.
+
 ## Próximos pasos sugeridos
 - Conectar `pay` y `sendTransaction` desde el cliente usando los endpoints.
 - Persistir progreso y leaderboard en base de datos.
