@@ -1,72 +1,77 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Tokens, tokenToDecimals } from '@worldcoin/minikit-js';
+import {
+  MiniAppPaymentErrorPayload,
+  MiniAppPaymentSuccessPayload,
+  Tokens,
+  tokenToDecimals,
+} from '@worldcoin/minikit-js';
 import { payWithMiniKit } from './miniKitClient';
 
 const RECEIVER_ADDRESS = process.env.NEXT_PUBLIC_RECEIVER_ADDRESS || '0xYourAddress';
 
-/**
- * Pagar por partida rápida (1 WLD)
- */
-export async function payForQuickMatch() {
-  // 1. Generar referencia única
-  const reference = uuidv4().replace(/-/g, '');
+type PaymentType = 'quick_match' | 'tournament';
 
-  // 2. Guardar referencia en backend
-  const initRes = await fetch('/api/initiate-payment', {
+type InitiatePaymentPayload = {
+  reference: string;
+  type: PaymentType;
+  token?: Tokens;
+  amount?: number;
+};
+
+const PAY_ERROR_MESSAGES: Record<string, string> = {
+  payment_rejected: 'Pago cancelado',
+  insufficient_balance: 'Saldo insuficiente, añade fondos',
+  transaction_failed: 'Transacción fallida, intenta de nuevo',
+  generic_error: 'Error inesperado, contacta soporte',
+};
+
+async function initiatePayment(body: InitiatePaymentPayload) {
+  const response = await fetch('/api/initiate-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reference, type: 'quick_match' }),
+    body: JSON.stringify(body),
   });
 
-  if (!initRes.ok) {
+  if (!response.ok) {
     throw new Error('Error al iniciar pago');
   }
+}
 
-  // 3. Ejecutar Pay command
-  const finalPayload = await payWithMiniKit({
-    reference,
-    to: RECEIVER_ADDRESS,
-    tokens: [
-      {
-        symbol: Tokens.WLD,
-        token_amount: tokenToDecimals(1, Tokens.WLD).toString(),
-      },
-    ],
-    description: 'Entrada a partida rápida',
-  });
+function handlePayError(finalPayload: MiniAppPaymentErrorPayload): never {
+  const message = PAY_ERROR_MESSAGES[finalPayload.error_code] ?? PAY_ERROR_MESSAGES.generic_error;
+  throw new Error(message);
+}
 
-  // 4. Verificar pago en backend
-  const confirmRes = await fetch('/api/confirm-payment', {
+async function confirmPayment(
+  payload: MiniAppPaymentSuccessPayload,
+  reference: string
+): Promise<{ success: boolean }> {
+  const response = await fetch('/api/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ payload: finalPayload, reference }),
+    body: JSON.stringify({ payload, reference }),
   });
 
-  const result = await confirmRes.json();
+  const result = await response.json();
 
-  if (!result.success) {
+  if (!response.ok || !result.success) {
     throw new Error('Pago no verificado');
   }
 
   return result;
 }
 
-/**
- * Pagar por torneo (buy-in configurable)
- */
-export async function payForTournament(token: Tokens, amount: number) {
-  const reference = uuidv4().replace(/-/g, '');
-
-  const initRes = await fetch('/api/initiate-payment', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reference, type: 'tournament', token, amount }),
-  });
-
-  if (!initRes.ok) {
-    throw new Error('Error al iniciar pago de torneo');
-  }
-
+async function executePayCommand({
+  reference,
+  token,
+  amount,
+  description,
+}: {
+  reference: string;
+  token: Tokens;
+  amount: number;
+  description: string;
+}) {
   const finalPayload = await payWithMiniKit({
     reference,
     to: RECEIVER_ADDRESS,
@@ -76,20 +81,48 @@ export async function payForTournament(token: Tokens, amount: number) {
         token_amount: tokenToDecimals(amount, token).toString(),
       },
     ],
-    description: `Entrada a torneo (${amount} ${token})`,
+    description,
   });
 
-  const confirmRes = await fetch('/api/confirm-payment', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ payload: finalPayload, reference }),
-  });
-
-  const result = await confirmRes.json();
-
-  if (!result.success) {
-    throw new Error('Pago de torneo no verificado');
+  if (finalPayload.status === 'error') {
+    return handlePayError(finalPayload);
   }
 
-  return result;
+  return finalPayload;
+}
+
+/**
+ * Pagar por partida rápida (1 WLD)
+ */
+export async function payForQuickMatch() {
+  const reference = uuidv4().replace(/-/g, '');
+
+  await initiatePayment({ reference, type: 'quick_match' });
+
+  const finalPayload = (await executePayCommand({
+    reference,
+    token: Tokens.WLD,
+    amount: 1,
+    description: 'Entrada a partida rápida',
+  })) as MiniAppPaymentSuccessPayload;
+
+  return confirmPayment(finalPayload, reference);
+}
+
+/**
+ * Pagar por torneo (buy-in configurable)
+ */
+export async function payForTournament(token: Tokens, amount: number) {
+  const reference = uuidv4().replace(/-/g, '');
+
+  await initiatePayment({ reference, type: 'tournament', token, amount });
+
+  const finalPayload = (await executePayCommand({
+    reference,
+    token,
+    amount,
+    description: `Entrada a torneo (${amount} ${token})`,
+  })) as MiniAppPaymentSuccessPayload;
+
+  return confirmPayment(finalPayload, reference);
 }
