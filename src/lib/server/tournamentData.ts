@@ -181,6 +181,10 @@ export function validateTokenForTournament(
   token: SupportedToken,
   amount: number | string
 ): { valid: boolean; message?: string } {
+  if (tournament.status !== 'active') {
+    return { valid: false, message: 'El torneo no está activo' };
+  }
+
   const tokenConfig = SUPPORTED_TOKENS[token];
   if (!tokenConfig) return { valid: false, message: 'Token no soportado' };
 
