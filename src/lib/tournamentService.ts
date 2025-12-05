@@ -2,6 +2,7 @@ import tournamentsConfig from '@/config/tournaments.json';
 import { LeaderboardEntry, Tournament } from './types';
 import { payForTournament } from './paymentService';
 import { SupportedToken, resolveTokenFromAddress } from './constants';
+import { normalizeTokenIdentifier } from './tokenNormalization';
 
 const BASE_PATH = '/api/tournaments';
 
@@ -65,10 +66,26 @@ export async function joinTournament(
 }
 
 export function resolveAcceptedTokens(tokens: string[] | undefined): SupportedToken[] {
-  const addresses = tokens && tokens.length > 0 ? tokens : undefined;
-  const resolved = (addresses ?? []).map((token) => resolveTokenFromAddress(token)).filter(Boolean) as SupportedToken[];
+  const normalized = (tokens ?? [])
+    .map((token) => {
+      try {
+        return normalizeTokenIdentifier(token);
+      } catch (error) {
+        console.warn('Token no válido en configuración de torneo', token, error);
+        return null;
+      }
+    })
+    .filter(Boolean) as string[];
 
-  return resolved.length > 0 ? resolved : ['WLD'];
+  const resolved = normalized
+    .map((token) => resolveTokenFromAddress(token))
+    .filter(Boolean) as SupportedToken[];
+
+  if (resolved.length === 0) {
+    return ['WLD'];
+  }
+
+  return Array.from(new Set(resolved));
 }
 
 export async function createTournamentFromConfig(configIndex: number) {

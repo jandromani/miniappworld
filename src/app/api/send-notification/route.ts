@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rateLimit';
 import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import { validateSameOrigin } from '@/lib/security';
 import { checksumAddress, isValidEvmAddress } from '@/lib/addressValidation';
 import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
+import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 type NotificationApiKey = {
   value: string;
@@ -326,6 +328,7 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'ip_not_allowed',
     });
+    recordApiFailureMetric('send-notification', 'ip_not_allowed');
     return NextResponse.json({ success: false, message: 'IP no permitida' }, { status: 403 });
   }
 
@@ -339,11 +342,13 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'origin_not_allowed',
     });
+    recordApiFailureMetric('send-notification', 'origin_not_allowed');
     return NextResponse.json({ success: false, message: 'Origen no permitido' }, { status: 403 });
   }
 
   if (!isAuthenticated(req)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'auth_failed' });
+    recordApiFailureMetric('send-notification', 'auth_failed');
     return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
   }
 
@@ -478,10 +483,36 @@ export async function POST(req: NextRequest) {
             title: sanitizedTitle,
             message: sanitizedMessage,
           },
-        ],
-        mini_app_path: sanitizedMiniAppPath,
-      }),
-    });
+          body: JSON.stringify({
+            app_id: process.env.APP_ID,
+            wallet_addresses: walletAddresses,
+            localisations: [
+              {
+                language: 'en',
+                title: sanitizedTitle,
+                message: sanitizedMessage,
+              },
+              {
+                language: 'es',
+                title: sanitizedTitle,
+                message: sanitizedMessage,
+              },
+            ],
+            mini_app_path: sanitizedMiniAppPath,
+          }),
+        }),
+      {
+        endpoint: '/api/v2/minikit/send-notification',
+        method: 'POST',
+        payload: {
+          app_id: process.env.APP_ID,
+          wallet_addresses: walletAddresses,
+          title: sanitizedTitle,
+          message: sanitizedMessage,
+          mini_app_path: sanitizedMiniAppPath,
+        },
+      }
+    );
 
     const result = await response.json();
 
