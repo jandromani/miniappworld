@@ -74,6 +74,20 @@ export type TournamentResultRecord = {
   prize?: string;
 };
 
+export type GameProgressRecord = {
+  progress_id: string;
+  session_id: string;
+  user_id: string;
+  mode: 'quick' | 'tournament';
+  tournament_id?: string;
+  score: number;
+  correct_answers: number;
+  total_questions: number;
+  session_token?: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DatabaseShape = {
   world_id_verifications: WorldIdVerificationRecord[];
   payments: PaymentRecord[];
@@ -81,6 +95,7 @@ export type DatabaseShape = {
   tournaments: TournamentRecord[];
   tournament_participants: TournamentParticipantRecord[];
   tournament_results: TournamentResultRecord[];
+  game_progress: GameProgressRecord[];
 };
 
 const DB_PATH = path.join(process.cwd(), 'data', 'database.json');
@@ -198,6 +213,7 @@ async function ensureDbFile(): Promise<void> {
         tournaments: [],
         tournament_participants: [],
         tournament_results: [],
+        game_progress: [],
       };
       await fs.writeFile(DB_PATH, JSON.stringify(emptyDb, null, 2), 'utf8');
     } else {
@@ -209,7 +225,16 @@ async function ensureDbFile(): Promise<void> {
 async function loadDb(): Promise<DatabaseShape> {
   await ensureDbFile();
   const content = await withRetries(() => fs.readFile(DB_PATH, 'utf8'));
-  return JSON.parse(content) as DatabaseShape;
+  const parsed = JSON.parse(content) as Partial<DatabaseShape>;
+  return {
+    world_id_verifications: parsed.world_id_verifications ?? [],
+    payments: parsed.payments ?? [],
+    payment_status_history: parsed.payment_status_history ?? [],
+    tournaments: parsed.tournaments ?? [],
+    tournament_participants: parsed.tournament_participants ?? [],
+    tournament_results: parsed.tournament_results ?? [],
+    game_progress: parsed.game_progress ?? [],
+  } satisfies DatabaseShape;
 }
 
 async function persistDb(db: DatabaseShape): Promise<void> {
@@ -589,6 +614,60 @@ export async function listTournamentResults(tournamentId: string): Promise<Tourn
   return withDbSnapshot((db) =>
     db.tournament_results.filter((entry) => entry.tournament_id === tournamentId)
   );
+}
+
+export async function upsertGameProgress(
+  record: Omit<GameProgressRecord, 'progress_id' | 'created_at' | 'updated_at'>,
+  context: AuditContext = {}
+): Promise<GameProgressRecord> {
+  const entry = await withDbTransaction(async (db) => {
+    assertUserExists(db, record.user_id, context);
+
+    const now = new Date().toISOString();
+    const existingIndex = db.game_progress.findIndex(
+      (item) => item.session_id === record.session_id && item.user_id === record.user_id
+    );
+
+    if (existingIndex >= 0) {
+      const updated: GameProgressRecord = {
+        ...db.game_progress[existingIndex],
+        ...record,
+        updated_at: now,
+      };
+      db.game_progress[existingIndex] = updated;
+      return updated;
+    }
+
+    const created: GameProgressRecord = {
+      ...record,
+      progress_id: randomUUID(),
+      created_at: now,
+      updated_at: now,
+    };
+    db.game_progress.push(created);
+    return created;
+  });
+
+  await appendAuditLog({
+    action: 'upsert_game_progress',
+    entity: 'game_progress',
+    entityId: entry.progress_id,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? entry.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: {
+      mode: entry.mode,
+      score: entry.score,
+      tournamentId: entry.tournament_id,
+    },
+  });
+
+  return entry;
+}
+
+export async function listGameProgressByUser(userId: string): Promise<GameProgressRecord[]> {
+  return withDbSnapshot((db) => db.game_progress.filter((entry) => entry.user_id === userId));
 }
 
 export async function normalizeTournamentRecord(record: TournamentRecord): TournamentRecord {
