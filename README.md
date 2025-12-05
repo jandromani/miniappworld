@@ -7,6 +7,7 @@ comodines, endpoints de pagos y contrato de torneos en World Chain.
 ## Requisitos
 - Node.js 18+
 - Variables de entorno definidas en `.env` (ver `.env.example`).
+  - Al iniciar se validan las claves críticas: `APP_ID`, `DEV_PORTAL_API_KEY`, `NEXT_PUBLIC_APP_ID`, `NEXT_PUBLIC_DEV_PORTAL_API_KEY`, `NEXT_PUBLIC_RECEIVER_ADDRESS` y al menos una de `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`.
   - Define `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` para habilitar rate limiting distribuido entre réplicas. Si no están
     presentes se usa un bucket en memoria (solo recomendado para desarrollo local).
 
@@ -28,9 +29,11 @@ npm run start
 
 ## Configuración de MiniKit
 Define en `.env`:
-- `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
-- `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
+- `APP_ID` y `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
+- `DEV_PORTAL_API_KEY` y `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
 - `NEXT_PUBLIC_TREASURY_ADDRESS`: Address que recibe buy-ins.
+- `NEXT_PUBLIC_RECEIVER_ADDRESS`: Address que recibe pagos simulados en el backend.
+- `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`: Claves para autenticar `/api/send-notification`.
 
 El proveedor de MiniKit se inicializa en `app/providers.tsx` y ejecuta `walletAuth` al
 montar la app. En la pantalla de juego (`/game`) puedes lanzar `verify` para validar

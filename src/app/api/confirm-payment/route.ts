@@ -15,6 +15,7 @@ import { sendNotification } from '@/lib/notificationService';
 import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
+import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 const PATH = 'confirm-payment';
 
@@ -205,6 +206,35 @@ export async function POST(req: NextRequest) {
           },
         }
       );
+    // 2. Consultar estado del pago en Developer Portal API
+    const { response } = await performDeveloperRequest(
+      () =>
+        fetch(
+          `https://developer.worldcoin.org/api/v2/minikit/transaction/${payload.transaction_id}?app_id=${process.env.APP_ID}&type=payment`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
+            },
+          }
+        ),
+      {
+        endpoint: '/api/v2/minikit/transaction',
+        method: 'GET',
+        payload: { transaction_id: payload.transaction_id, app_id: process.env.APP_ID, type: 'payment' },
+      }
+    );
+
+    if (!response.ok) {
+      return apiErrorResponse('UPSTREAM_ERROR', {
+        message: 'No se pudo verificar el pago en Developer Portal',
+        path: PATH,
+        details: { status: response.status },
+      });
+    }
+
+    transaction = await response.json();
+  }
 
       if (!response.ok) {
         return apiErrorResponse('UPSTREAM_ERROR', {
