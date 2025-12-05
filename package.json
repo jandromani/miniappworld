@@ -9,6 +9,7 @@
     "lint": "next lint",
     "test": "jest",
     "test:ci": "jest --runInBand",
+    "db:smoke": "node scripts/dbSmoke.js",
     "data:snapshot": "node scripts/dataSnapshots.js create",
     "data:snapshot:list": "node scripts/dataSnapshots.js list",
     "data:snapshot:restore": "node scripts/dataSnapshots.js restore",
