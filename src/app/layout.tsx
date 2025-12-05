@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import '@/styles/globals.css';
 import { MiniKitProvider } from '@/components/MiniKitProvider';
+import '@/lib/server/tournamentNotificationJobs';
 
 const inter = Inter({ subsets: ['latin'] });
 

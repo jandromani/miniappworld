@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { MiniAppPaymentSuccessPayload } from '@worldcoin/minikit-js';
+import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
@@ -7,9 +8,15 @@ import {
   recordAuditEvent,
   updatePaymentStatus,
 } from '@/lib/database';
+import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
 import { resolveTokenFromAddress } from '@/lib/constants';
+import { validateSameOrigin } from '@/lib/security';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
+import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
+
+const PATH = 'confirm-payment';
 
 function normalizeTokenAmount(value: unknown): bigint {
   const asString = typeof value === 'string' ? value : value?.toString?.();
@@ -17,7 +24,13 @@ function normalizeTokenAmount(value: unknown): bigint {
     throw new Error('Token amount inválido');
   }
 
-  return BigInt(asString);
+  const normalized = BigInt(asString);
+
+  if (normalized <= 0n) {
+    throw new Error('Token amount debe ser positivo');
+  }
+
+  return normalized;
 }
 
 function shouldSimulateDeveloperPortal(tokenAddress?: string | null) {
@@ -54,6 +67,11 @@ function buildSimulatedTransaction(
 }
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const { payload, reference } = (await req.json()) as {
     payload: MiniAppPaymentSuccessPayload;
     reference: string;
@@ -62,19 +80,35 @@ export async function POST(req: NextRequest) {
   const sessionToken = req.cookies.get('session_token')?.value;
   const sessionId = sessionToken;
 
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    await recordAuditEvent({
+      action: 'confirm_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId,
+      status: 'error',
+      details: { reason: originCheck.reason },
+    });
+
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
+
   if (!sessionToken) {
     await recordAuditEvent({
       action: 'confirm_payment',
       entity: 'payments',
       entityId: reference,
+      sessionId,
       status: 'error',
       details: { reason: 'missing_session_token' },
     });
 
-    return NextResponse.json(
-      { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
-      { status: 401 }
-    );
+    return apiErrorResponse('SESSION_REQUIRED', {
+      message: 'Sesión no verificada. Realiza la verificación de World ID.',
+      path: PATH,
+    });
   }
 
   const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
@@ -89,34 +123,49 @@ export async function POST(req: NextRequest) {
       details: { reason: 'session_not_found' },
     });
 
-    return NextResponse.json(
-      { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
-      { status: 401 }
-    );
+    return apiErrorResponse('SESSION_INVALID', {
+      message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
+      path: PATH,
+    });
   }
 
   if (!payload || !reference) {
-    return NextResponse.json(
-      { success: false, message: 'Payload y referencia son obligatorios' },
-      { status: 400 }
-    );
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: 'Payload y referencia son obligatorios',
+      path: PATH,
+    });
   }
 
   if (payload.status === 'error') {
-    return NextResponse.json({ success: false, message: 'Pago rechazado' }, { status: 400 });
+    return apiErrorResponse('PAYMENT_REJECTED', { message: 'Pago rechazado', path: PATH });
   }
 
   const storedPayment = await findPaymentByReference(reference);
 
   if (!storedPayment) {
-    return NextResponse.json({ success: false, message: 'Referencia no encontrada' }, { status: 400 });
+    return apiErrorResponse('REFERENCE_NOT_FOUND', {
+      message: 'Referencia no encontrada',
+      path: PATH,
+      details: { reference },
+    });
   }
 
   if (storedPayment.status === 'confirmed') {
+    logApiEvent('info', {
+      path: PATH,
+      action: 'already_confirmed',
+      reference,
+    });
     return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
   }
 
   const simulateDeveloperPortal = shouldSimulateDeveloperPortal(storedPayment.token_address);
+  if (!process.env.APP_ID || !process.env.DEV_PORTAL_API_KEY) {
+    return apiErrorResponse('CONFIG_MISSING', {
+      message: 'Faltan APP_ID o DEV_PORTAL_API_KEY',
+      path: PATH,
+    });
+  }
 
   let transaction: Record<string, unknown>;
 
@@ -140,6 +189,13 @@ export async function POST(req: NextRequest) {
         },
       }
     );
+  if (!response.ok) {
+    return apiErrorResponse('UPSTREAM_ERROR', {
+      message: 'No se pudo verificar el pago en Developer Portal',
+      path: PATH,
+      details: { status: response.status },
+    });
+  }
 
     if (!response.ok) {
       return NextResponse.json(
@@ -172,13 +228,11 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'La referencia devuelta no coincide con el pago esperado',
-      },
-      { status: 400 }
-    );
+    return apiErrorResponse('PAYMENT_STATUS_ERROR', {
+      message: 'La referencia devuelta no coincide con el pago esperado',
+      path: PATH,
+      details: { expected: reference, received: transactionReference },
+    });
   }
 
   const transactionToken =
@@ -198,12 +252,20 @@ export async function POST(req: NextRequest) {
         sessionId,
       }
     );
-    return NextResponse.json({ success: false, message: 'Monto de la transacción no válido' }, { status: 400 });
+    return apiErrorResponse('TRANSACTION_INVALID', {
+      message: 'Monto de la transacción no válido',
+      path: PATH,
+      details: { amount: transactionAmountRaw, error: (error as Error)?.message },
+    });
   }
 
   const normalizedExpectedToken = storedPayment.token_address
     ? normalizeTokenIdentifier(storedPayment.token_address)
     : undefined;
+  const expectedTokenKey = normalizedExpectedToken
+    ? resolveTokenFromAddress(normalizedExpectedToken)
+    : null;
+  const amountTolerance = expectedTokenKey ? TOKEN_AMOUNT_TOLERANCE[expectedTokenKey] ?? 0n : 0n;
 
   if (storedPayment.session_token && storedPayment.session_token !== sessionToken) {
     await updatePaymentStatus(
@@ -215,10 +277,11 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
-    return NextResponse.json(
-      { success: false, message: 'La referencia pertenece a otra sesión' },
-      { status: 403 }
-    );
+    return apiErrorResponse('SESSION_INVALID', {
+      message: 'La referencia pertenece a otra sesión',
+      path: PATH,
+      details: { expectedSession: storedPayment.session_token, sessionId },
+    });
   }
 
   const verifiedIdentity = sessionIdentity;
@@ -233,10 +296,11 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
-    return NextResponse.json(
-      { success: false, message: 'El pago pertenece a otro usuario verificado' },
-      { status: 403 }
-    );
+    return apiErrorResponse('IDENTITY_MISMATCH', {
+      message: 'El pago pertenece a otro usuario verificado',
+      path: PATH,
+      details: { expectedUser: storedPayment.user_id, sessionUser: verifiedIdentity.user_id },
+    });
   }
 
   if (storedPayment.nullifier_hash && !verifiedIdentity?.nullifier_hash) {
@@ -249,10 +313,11 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
-    return NextResponse.json(
-      { success: false, message: 'La sesión verificada es requerida para confirmar el pago' },
-      { status: 403 }
-    );
+    return apiErrorResponse('IDENTITY_MISMATCH', {
+      message: 'La sesión verificada es requerida para confirmar el pago',
+      path: PATH,
+      details: { expectedNullifier: storedPayment.nullifier_hash },
+    });
   }
 
   if (
@@ -268,11 +333,15 @@ export async function POST(req: NextRequest) {
       },
       { userId: storedPayment.user_id, sessionId }
     );
-  
-    return NextResponse.json(
-      { success: false, message: 'El pago pertenece a otra identidad verificada' },
-      { status: 403 }
-    );
+
+    return apiErrorResponse('IDENTITY_MISMATCH', {
+      message: 'El pago pertenece a otra identidad verificada',
+      path: PATH,
+      details: {
+        expected: storedPayment.nullifier_hash,
+        received: verifiedIdentity.nullifier_hash,
+      },
+    });
   }
 
   if (
@@ -289,31 +358,32 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'El token cobrado no coincide con el pago solicitado',
-      },
-      { status: 400 }
-    );
+    return apiErrorResponse('TOKEN_MISMATCH', {
+      message: 'El token cobrado no coincide con el pago solicitado',
+      path: PATH,
+      details: { expected: normalizedExpectedToken, received: transactionToken },
+    });
   }
 
   if (transactionAmount !== undefined && storedPayment.token_amount) {
     const expected = BigInt(storedPayment.token_amount);
-    if (expected !== transactionAmount) {
+    const difference = transactionAmount >= expected ? transactionAmount - expected : expected - transactionAmount;
+
+    if (difference > amountTolerance) {
       await updatePaymentStatus(
         reference,
         'failed',
         {
           reason: 'Monto no coincide con el pago esperado',
         },
-        { userId: storedPayment.user_id, sessionId }
-      );
+      { userId: storedPayment.user_id, sessionId }
+    );
 
-      return NextResponse.json(
-        { success: false, message: 'El monto cobrado no coincide con el pago solicitado' },
-        { status: 400 }
-      );
+      return apiErrorResponse('AMOUNT_MISMATCH', {
+        message: 'El monto cobrado no coincide con el pago solicitado',
+        path: PATH,
+        details: { expected: expected.toString(), received: transactionAmount?.toString() },
+      });
     }
   }
 
@@ -325,13 +395,14 @@ export async function POST(req: NextRequest) {
         {
           reason: 'No se pudo verificar la wallet que realizó el pago',
         },
-        { userId: storedPayment.user_id, sessionId }
-      );
+      { userId: storedPayment.user_id, sessionId }
+    );
 
-      return NextResponse.json(
-        { success: false, message: 'No se pudo validar la wallet del pago' },
-        { status: 400 }
-      );
+      return apiErrorResponse('TRANSACTION_INVALID', {
+        message: 'No se pudo validar la wallet del pago',
+        path: PATH,
+        details: { transactionId: payload.transaction_id },
+      });
     }
 
     const sameWallet =
@@ -344,13 +415,14 @@ export async function POST(req: NextRequest) {
         {
           reason: 'La wallet cobradora no coincide con la que inició el pago',
         },
-        { userId: storedPayment.user_id, sessionId }
-      );
+      { userId: storedPayment.user_id, sessionId }
+    );
 
-      return NextResponse.json(
-        { success: false, message: 'La wallet que pagó no coincide con la esperada' },
-        { status: 400 }
-      );
+      return apiErrorResponse('WALLET_MISMATCH', {
+        message: 'La wallet que pagó no coincide con la esperada',
+        path: PATH,
+        details: { expected: storedPayment.wallet_address, received: transactionWallet },
+      });
     }
   }
 
@@ -363,16 +435,14 @@ export async function POST(req: NextRequest) {
         {
           reason: 'Referencia de torneo no coincide con el flujo solicitado',
         },
-        { userId: storedPayment.user_id, sessionId }
-      );
+      { userId: storedPayment.user_id, sessionId }
+    );
 
-      return NextResponse.json(
-        {
-          success: false,
-          message: 'La referencia está asociada a otro torneo, no se puede reutilizar',
-        },
-        { status: 400 }
-      );
+      return apiErrorResponse('TOURNAMENT_MISMATCH', {
+        message: 'La referencia está asociada a otro torneo, no se puede reutilizar',
+        path: PATH,
+        details: { expected: storedPayment.tournament_id, received: transactionTournamentId },
+      });
     }
   }
 
@@ -390,29 +460,52 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
+    if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
+      const tournament = await getTournament(storedPayment.tournament_id);
+      if (tournament) {
+        await incrementTournamentPool(tournament);
+      }
+    }
+
     if (storedPayment.wallet_address) {
-      await sendNotification({
+      const notificationResult = await sendNotification({
         walletAddresses: [storedPayment.wallet_address],
         title: 'Pago confirmado',
         message: 'Pago confirmado, ya puedes unirte al torneo',
-        miniAppPath: storedPayment.tournament_id ? `/tournament/${storedPayment.tournament_id}` : '/tournament',
+        miniAppPath: storedPayment.tournament_id
+          ? `/tournament/${storedPayment.tournament_id}`
+          : '/tournament',
       });
+
+      if (!notificationResult.success) {
+        console.error('No se pudo enviar la notificación de pago confirmado', {
+          reference,
+          walletAddress: storedPayment.wallet_address,
+          errorMessage: notificationResult.message,
+        });
+      }
     }
+
+    logApiEvent('info', {
+      path: PATH,
+      action: 'confirmed',
+      reference,
+      transactionId: payload.transaction_id,
+      userId: storedPayment.user_id,
+    });
 
     return NextResponse.json({ success: true, message: 'Pago confirmado' });
   }
 
   const failureMessage = getFailureMessage(transactionStatus);
 
-  console.error('Error al confirmar pago', {
-    reference,
-    transactionStatus,
-    transaction_id: payload.transaction_id,
-  });
-
   await updatePaymentStatus(reference, 'failed', { reason: failureMessage }, { userId: storedPayment.user_id, sessionId });
 
-  return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
+  return apiErrorResponse('PAYMENT_STATUS_ERROR', {
+    message: failureMessage,
+    path: PATH,
+    details: { reference, transactionStatus, transaction_id: payload.transaction_id },
+  });
 }
 
 function getFailureMessage(status: string) {
