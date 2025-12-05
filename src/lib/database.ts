@@ -113,6 +113,7 @@ export type DatabaseShape = {
 
 const DATA_ROOT = process.env.STATE_DIRECTORY ?? path.join(process.cwd(), 'data');
 const DB_PATH = path.join(DATA_ROOT, 'database.json');
+const JOURNAL_PATH = path.join(DATA_ROOT, 'database.journal');
 const LOCK_PATH = path.join(DATA_ROOT, 'database.lock');
 const AUDIT_LOG_PATH = path.join(DATA_ROOT, 'audit.log');
 const AUDIT_LOG_RETENTION_DAYS = Number(process.env.AUDIT_LOG_RETENTION_DAYS ?? 30);
@@ -128,6 +129,7 @@ const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET ?? 'log_salt';
 const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
 const LOCK_MAX_AGE_MS = 10_000; // 10 segundos
+const LOCK_WATCHDOG_INTERVAL_MS = Math.max(2000, Math.floor(LOCK_MAX_AGE_MS / 2));
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
 const DB_DIALECT = (process.env.DB_DIALECT ?? 'sqlite').toLowerCase();
 const BUSY_TIMEOUT_MS = Number(process.env.DB_BUSY_TIMEOUT_MS ?? 1500);
@@ -313,7 +315,7 @@ async function withRetries<T>(operation: () => Promise<T>, attempts = RETRY_ATTE
   throw lastError;
 }
 
-const inMemoryRowLocks = new Set<string>();
+const inMemoryRowLocks = new Map<string, number>();
 
 function normalizeIsolationLevel(isolationLevel?: IsolationLevel): IsolationLevel {
   if (!isolationLevel) return DEFAULT_ISOLATION_LEVEL;
@@ -351,7 +353,7 @@ async function acquireRowLocks(lockKeys: string[], scope: string, deadline: numb
     const conflicting = keys.find((key) => inMemoryRowLocks.has(key));
     if (!conflicting) {
       keys.forEach((key) => {
-        inMemoryRowLocks.add(key);
+        inMemoryRowLocks.set(key, Date.now());
         acquired.add(key);
       });
       return () => {
@@ -431,6 +433,48 @@ async function releaseLock(handle?: FileHandle) {
     }
   }
 }
+
+function releaseStaleRowLocks() {
+  if (inMemoryRowLocks.size === 0) return;
+
+  const now = Date.now();
+  for (const [key, acquiredAt] of inMemoryRowLocks.entries()) {
+    if (now - acquiredAt > LOCK_MAX_AGE_MS) {
+      console.warn(`[database] Row lock expirado liberado por watchdog: ${key}`);
+      recordDbDeadlock('row_lock_watchdog');
+      inMemoryRowLocks.delete(key);
+    }
+  }
+}
+
+async function releaseStaleFileLock() {
+  try {
+    const stats = await fs.stat(LOCK_PATH);
+    const ageMs = Date.now() - stats.mtimeMs;
+
+    if (ageMs > LOCK_MAX_AGE_MS) {
+      console.warn(`[database] Lockfile expirado liberado por watchdog (edad: ${ageMs}ms)`);
+      recordDbDeadlock('db_file_lock_watchdog');
+      await releaseLock();
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') {
+      console.error('[database] Watchdog: error verificando lockfile', error);
+    }
+  }
+}
+
+function startLockWatchdog() {
+  if (process.env.DISABLE_LOCAL_STATE === 'true') return;
+
+  setInterval(() => {
+    releaseStaleRowLocks();
+    void releaseStaleFileLock();
+  }, LOCK_WATCHDOG_INTERVAL_MS).unref();
+}
+
+startLockWatchdog();
 
 async function withDbLock<T>(operation: () => Promise<T>): Promise<T> {
   const lock = await acquireLock();
@@ -633,6 +677,60 @@ export async function recordAuditEvent(event: Omit<AuditLogEntry, 'timestamp'>) 
   await appendAuditLog({ ...event, timestamp: new Date().toISOString() });
 }
 
+async function recoverFromJournalIfNeeded() {
+  let journalContent: string | undefined;
+
+  try {
+    journalContent = await fs.readFile(JOURNAL_PATH, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') {
+      console.error('[database] No se pudo leer el journal', error);
+    }
+    return;
+  }
+
+  let requiresRestore = false;
+
+  try {
+    const dbContent = await fs.readFile(DB_PATH, 'utf8');
+    deserializeDb(dbContent);
+  } catch (error) {
+    requiresRestore = true;
+    console.warn('[database] Restaurando base de datos desde journal después de error de escritura');
+    try {
+      await fs.writeFile(DB_PATH, journalContent ?? '', 'utf8');
+    } catch (writeError) {
+      console.error('[database] No se pudo restaurar desde journal', writeError);
+    }
+  }
+
+  try {
+    await fs.unlink(JOURNAL_PATH);
+  } catch (cleanupError) {
+    const code = (cleanupError as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') {
+      console.error('[database] No se pudo limpiar el journal', cleanupError);
+    }
+  }
+
+  if (requiresRestore) {
+    recordDbDeadlock('db_journal_restore');
+  }
+}
+
+async function createJournalBackup() {
+  try {
+    const currentContent = await fs.readFile(DB_PATH, 'utf8');
+    await fs.writeFile(JOURNAL_PATH, currentContent, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code && code !== 'ENOENT') {
+      console.error('[database] No se pudo crear respaldo de journal', error);
+    }
+  }
+}
+
 async function ensureDbFile(): Promise<void> {
   assertPersistentStorageAvailable();
 
@@ -641,17 +739,28 @@ async function ensureDbFile(): Promise<void> {
     await fs.access(DB_PATH);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      const emptyDb: DatabaseShape = {
-        world_id_verifications: [],
-        payments: [],
-        payment_status_history: [],
-        tournaments: [],
-        tournament_participants: [],
-        tournament_results: [],
-        tournament_payouts: [],
-        game_progress: [],
-      };
-      await fs.writeFile(DB_PATH, serializeDb(emptyDb), 'utf8');
+      try {
+        const journalContent = await fs.readFile(JOURNAL_PATH, 'utf8');
+        await fs.writeFile(DB_PATH, journalContent, 'utf8');
+        console.warn('[database] Base de datos restaurada desde journal al no encontrarse archivo principal');
+      } catch (journalError) {
+        const journalCode = (journalError as NodeJS.ErrnoException).code;
+        if (journalCode !== 'ENOENT') {
+          console.error('[database] No se pudo restaurar desde journal inexistente', journalError);
+        }
+
+        const emptyDb: DatabaseShape = {
+          world_id_verifications: [],
+          payments: [],
+          payment_status_history: [],
+          tournaments: [],
+          tournament_participants: [],
+          tournament_results: [],
+          tournament_payouts: [],
+          game_progress: [],
+        };
+        await fs.writeFile(DB_PATH, serializeDb(emptyDb), 'utf8');
+      }
     } else {
       throw error;
     }
@@ -662,6 +771,7 @@ async function loadDb(): Promise<DatabaseShape> {
   assertPersistentStorageAvailable();
 
   await ensureDbFile();
+  await recoverFromJournalIfNeeded();
   const content = await withRetries(() => fs.readFile(DB_PATH, 'utf8'));
   const parsed = deserializeDb(content);
   return {
@@ -681,8 +791,17 @@ async function persistDb(db: DatabaseShape): Promise<void> {
   const tempPath = `${DB_PATH}.tmp`;
 
   await withRetries(async () => {
+    await createJournalBackup();
     await fs.writeFile(tempPath, serializeDb(db), 'utf8');
     await fs.rename(tempPath, DB_PATH);
+    try {
+      await fs.unlink(JOURNAL_PATH);
+    } catch (cleanupError) {
+      const code = (cleanupError as NodeJS.ErrnoException).code;
+      if (code && code !== 'ENOENT') {
+        console.error('[database] No se pudo limpiar journal tras persistencia', cleanupError);
+      }
+    }
   });
 }
 
