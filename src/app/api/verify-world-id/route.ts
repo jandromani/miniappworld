@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { verifyCloudProof } from '@worldcoin/minikit-js';
-import { recordApiFailureMetric } from '@/lib/metrics';
 import { ApiLogLevel, apiErrorResponse, logApiEvent, type ApiErrorCode } from '@/lib/apiError';
+import { recordApiFailureMetric } from '@/lib/metrics';
+import { generateCsrfToken, setCsrfCookie } from '@/lib/security';
 import {
   findWorldIdVerificationByNullifier,
   findWorldIdVerificationByUser,
@@ -249,6 +250,8 @@ export async function POST(req: NextRequest) {
       createdAt: identityRecord.created_at,
     });
 
+    const csrfToken = generateCsrfToken();
+
     response.cookies.set(SESSION_COOKIE, sessionToken, {
       httpOnly: true,
       secure: true,
@@ -256,6 +259,8 @@ export async function POST(req: NextRequest) {
       path: '/',
       maxAge: 60 * 60 * 24 * 7,
     });
+    setCsrfCookie(response, csrfToken);
+    response.headers.set('x-csrf-token', csrfToken);
 
     logApiEvent('info', {
       path: PATH,

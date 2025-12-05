@@ -3,6 +3,7 @@ import { Inter } from 'next/font/google';
 import '@/styles/globals.css';
 import { MiniKitProvider } from '@/components/MiniKitProvider';
 import '@/lib/server/tournamentNotificationJobs';
+import '@/lib/server/notificationKeyRotationJob';
 import { DevConsoleLoader } from '@/components/DevConsoleLoader';
 
 const inter = Inter({ subsets: ['latin'] });

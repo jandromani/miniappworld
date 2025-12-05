@@ -11,7 +11,7 @@ import {
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
-import { validateSameOrigin } from '@/lib/security';
+import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 import { recordApiFailureMetric } from '@/lib/metrics';
@@ -129,9 +129,18 @@ export async function POST(req: NextRequest) {
     const reference = body?.reference;
 
     const originCheck = validateSameOrigin(req);
+    const csrfCheck = validateCsrf(req);
 
-    if (!originCheck.valid) {
-      await recordFailureAudit(reference, sessionId, 'invalid_origin', { reason: originCheck.reason });
+    if (!originCheck.valid || !csrfCheck.valid) {
+      await recordAuditEvent({
+        action: 'confirm_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId,
+        status: 'error',
+        details: { reason: originCheck.valid ? csrfCheck.reason : originCheck.reason },
+      });
+
       return apiErrorResponse('FORBIDDEN', { message: 'Solicitud no autorizada', path: PATH });
     }
 

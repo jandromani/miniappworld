@@ -8,16 +8,10 @@ import {
   updateWorldIdWallet,
 } from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
-import { validateSameOrigin } from '@/lib/security';
+import { normalizeTokenIdentifier, isSupportedTokenSymbol, isSupportedTokenAddress } from '@/lib/tokenNormalization';
+import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { recordApiFailureMetric } from '@/lib/metrics';
-import {
-  isSupportedTokenAddress,
-  isSupportedTokenSymbol,
-  normalizeTokenIdentifier,
-  tokensMatch,
-} from '@/lib/tokenNormalization';
-import { requireActiveSession } from '@/lib/sessionValidation';
 
 const PATH = 'initiate-payment';
 
@@ -28,10 +22,35 @@ export async function POST(req: NextRequest) {
       return envError;
     }
 
-    const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
+    const {
+      reference,
+      type,
+      token,
+      amount,
+      tournamentId,
+      walletAddress,
+      userId: bodyUserId,
+    } = await req.json();
+
+    const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
     const originCheck = validateSameOrigin(req);
-    if (!originCheck.valid) {
+    const csrfCheck = validateCsrf(req);
+
+    if (!originCheck.valid || !csrfCheck.valid) {
+      await recordAuditEvent({
+        action: 'initiate_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId: sessionToken,
+        status: 'error',
+        details: { reason: originCheck.valid ? csrfCheck.reason : originCheck.reason },
+      });
+
+      return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+    }
+
+    if (!sessionToken) {
       await recordAuditEvent({
         action: 'initiate_payment',
         entity: 'payments',
@@ -39,8 +58,10 @@ export async function POST(req: NextRequest) {
         status: 'error',
         details: { reason: originCheck.reason },
       });
-
-      return apiErrorResponse('FORBIDDEN', { message: 'Solicitud no autorizada', path: PATH });
+      return apiErrorResponse('SESSION_REQUIRED', {
+        message: 'Sesión no verificada. Realiza la verificación de World ID.',
+        path: PATH,
+      });
     }
 
     const sessionResult = await requireActiveSession(req, {
@@ -48,18 +69,50 @@ export async function POST(req: NextRequest) {
       audit: { action: 'initiate_payment', entity: 'payments', entityId: reference },
     });
 
-    if ('error' in sessionResult) {
-      return sessionResult.error;
-    }
-
-    const { sessionToken, identity } = sessionResult;
-
-    if (bodyUserId && bodyUserId !== identity.user_id) {
-      return apiErrorResponse('FORBIDDEN', {
-        message: 'El usuario enviado no coincide con la sesión activa',
-        details: { bodyUserId, sessionUser: identity.user_id },
+    if (!sessionIdentity) {
+      await recordAuditEvent({
+        action: 'initiate_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId: sessionToken,
+        status: 'error',
+        details: { reason: 'session_not_found' },
+      });
+      return apiErrorResponse('SESSION_INVALID', {
+        message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
         path: PATH,
       });
+    }
+
+    if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
+      return apiErrorResponse('FORBIDDEN', {
+        message: 'El usuario enviado no coincide con la sesión activa',
+        details: { bodyUserId, sessionUser: sessionIdentity.user_id },
+        path: PATH,
+      });
+    }
+
+    const verifiedUserId = sessionIdentity.user_id;
+    const verifiedWalletAddress = walletAddress ?? sessionIdentity.wallet_address;
+    const verifiedNullifier = sessionIdentity.nullifier_hash;
+
+    if (!verifiedUserId || !verifiedWalletAddress || !verifiedNullifier) {
+      await recordAuditEvent({
+        action: 'initiate_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId: sessionToken,
+        status: 'error',
+        details: { reason: 'missing_session_identity_fields' },
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Información de sesión incompleta. Vuelve a verificar tu identidad.',
+        },
+        { status: 400 }
+      );
     }
 
     if (!reference || !type) {
@@ -84,16 +137,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (token && typeof token !== 'string') {
-      return apiErrorResponse('INVALID_PAYLOAD', { message: 'Token inválido', path: PATH });
-    }
-
-    if (token && !isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token)) {
-      return apiErrorResponse('UNSUPPORTED_TOKEN', { message: 'Token no soportado', path: PATH });
-    }
-
-    const verifiedWalletAddress = walletAddress ?? identity.wallet_address;
-
     if (
       walletAddress &&
       identity.wallet_address &&
@@ -102,34 +145,20 @@ export async function POST(req: NextRequest) {
       return apiErrorResponse('FORBIDDEN', {
         message: 'La wallet enviada no coincide con la sesión verificada',
         path: PATH,
-        details: { walletAddress, sessionWallet: identity.wallet_address },
-      });
-    }
-
-    const normalizedToken = token
-      ? normalizeTokenIdentifier(token)
-      : normalizeTokenIdentifier(SUPPORTED_TOKENS.WLD.address);
-    const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
-    const decimals = SUPPORTED_TOKENS[tokenKey].decimals;
-    const numericAmount = Number(amount);
-
-    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-      return apiErrorResponse('INVALID_PAYLOAD', {
-        message: 'El monto debe ser un número positivo',
-        path: PATH,
+        details: { walletAddress, sessionWallet: sessionIdentity.wallet_address },
       });
     }
 
     const existingPayment = await findPaymentByReference(reference);
 
     if (existingPayment) {
-      const sameUser = !existingPayment.user_id || existingPayment.user_id === identity.user_id;
-      const sameWallet = tokensMatch(
-        existingPayment.wallet_address?.toLowerCase(),
-        verifiedWalletAddress?.toLowerCase()
-      );
+      const sameUser = !existingPayment.user_id || existingPayment.user_id === sessionIdentity.user_id;
+      const sameWallet =
+        !existingPayment.wallet_address || !verifiedWalletAddress
+          ? true
+          : existingPayment.wallet_address.toLowerCase() === verifiedWalletAddress.toLowerCase();
 
-      if (!sameUser || (!sameWallet && verifiedWalletAddress)) {
+      if (!sameUser || !sameWallet) {
         return apiErrorResponse('REFERENCE_CONFLICT', {
           message: 'La referencia ya fue utilizada por otro usuario',
           path: PATH,
@@ -141,16 +170,35 @@ export async function POST(req: NextRequest) {
         success: true,
         reference,
         tournamentId: existingPayment.tournament_id,
-        userId: existingPayment.user_id ?? identity.user_id,
+        userId: existingPayment.user_id ?? sessionIdentity.user_id,
         walletAddress: existingPayment.wallet_address ?? verifiedWalletAddress,
       });
+    }
+
+    if (token && typeof token !== 'string') {
+      return NextResponse.json({ success: false, message: 'Token inválido' }, { status: 400 });
+    }
+
+    if (token && !isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token)) {
+      return NextResponse.json({ success: false, message: 'Token no soportado' }, { status: 400 });
+    }
+
+    const normalizedToken = token
+      ? normalizeTokenIdentifier(token)
+      : normalizeTokenIdentifier(SUPPORTED_TOKENS.WLD.address);
+    const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
+    const decimals = SUPPORTED_TOKENS[tokenKey].decimals;
+    const numericAmount = Number(amount);
+
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return NextResponse.json({ success: false, message: 'El monto debe ser un número positivo' }, { status: 400 });
     }
 
     const tokenAmount = BigInt(Math.round(numericAmount * 10 ** decimals)).toString();
 
     if (verifiedWalletAddress) {
-      await updateWorldIdWallet(identity.user_id, verifiedWalletAddress, {
-        userId: identity.user_id,
+      await updateWorldIdWallet(verifiedUserId, verifiedWalletAddress, {
+        userId: verifiedUserId,
         sessionId: sessionToken,
       });
     }
@@ -163,12 +211,12 @@ export async function POST(req: NextRequest) {
         token_amount: tokenAmount,
         tournament_id: tournamentId,
         recipient_address: process.env.NEXT_PUBLIC_RECEIVER_ADDRESS,
-        user_id: identity.user_id,
+        user_id: verifiedUserId,
         wallet_address: verifiedWalletAddress,
-        nullifier_hash: identity.nullifier_hash,
+        nullifier_hash: verifiedNullifier,
         session_token: sessionToken,
       },
-      { userId: identity.user_id, sessionId: sessionToken }
+      { userId: verifiedUserId, sessionId: sessionToken }
     );
 
     logApiEvent('info', {
@@ -179,7 +227,7 @@ export async function POST(req: NextRequest) {
       token,
       amount,
       tournamentId,
-      userId: identity.user_id,
+      userId: verifiedUserId,
     });
 
     return NextResponse.json({ success: true, reference, tournamentId });

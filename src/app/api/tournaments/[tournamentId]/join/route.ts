@@ -12,13 +12,11 @@ import {
   findWorldIdVerificationByUser,
   recordAuditEvent,
 } from '@/lib/database';
-import {
-  isSupportedTokenAddress,
-  isSupportedTokenSymbol,
-  normalizeTokenIdentifier,
-} from '@/lib/tokenNormalization';
+import { isSupportedTokenAddress, isSupportedTokenSymbol, normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 import { rateLimit } from '@/lib/rateLimit';
 import { sendNotification } from '@/lib/notificationService';
+import { validateCsrf, validateSameOrigin } from '@/lib/security';
+import { sanitizeUserText } from '@/lib/validation';
 import { requireActiveSession } from '@/lib/sessionValidation';
 
 const PATH = 'join_tournament';
@@ -30,6 +28,31 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
   const rate = await rateLimit(rateKey);
   if (!rate.allowed) {
     return NextResponse.json({ error: 'Límite de solicitudes alcanzado' }, { status: 429 });
+  }
+
+  const originCheck = validateSameOrigin(req);
+  const csrfCheck = validateCsrf(req);
+  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+
+  if (!originCheck.valid || !csrfCheck.valid) {
+    await recordAuditEvent({
+      action: 'join_tournament',
+      entity: 'tournaments',
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: originCheck.valid ? csrfCheck.reason : originCheck.reason },
+    });
+    return NextResponse.json({ error: 'Solicitud no autorizada' }, { status: 403 });
+  }
+
+  if (!sessionToken) {
+    await recordAuditEvent({
+      action: 'join_tournament',
+      entity: 'tournaments',
+      status: 'error',
+      details: { reason: 'missing_session_token' },
+    });
+    return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
   }
 
   const tournamentId = params.tournamentId ?? params.id;
@@ -44,29 +67,11 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'Torneo no encontrado' }, { status: 404 });
   }
 
-  const { token, amount, userId: bodyUserId, username, walletAddress, paymentReference } =
-    await req.json();
-  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
-
-  if (!sessionToken) {
-    await recordAuditEvent({
-      action: 'join_tournament',
-      entity: 'tournaments',
-      entityId: tournamentId,
-      status: 'error',
-      details: { reason: 'missing_session_token', paymentReference },
-    });
-    return NextResponse.json(
-      { error: 'Sesión no verificada. Vuelve a verificar tu identidad para continuar.' },
-      { status: 401 },
-    );
-  }
+  const { token, amount, userId: bodyUserId, username, walletAddress, score, paymentReference } = await req.json();
 
   const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
-
-  const sessionResult = await requireActiveSession(req, {
-    path: PATH,
-    audit: {
+  if (!sessionIdentity) {
+    await recordAuditEvent({
       action: 'join_tournament',
       entity: 'tournaments',
       entityId: tournamentId,
@@ -78,7 +83,8 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return sessionResult.error;
   }
 
-  const { identity, sessionToken } = sessionResult;
+  const userId = sessionIdentity.user_id;
+  const worldId = await findWorldIdVerificationByUser(userId);
 
   if (bodyUserId && bodyUserId !== identity.user_id) {
     return NextResponse.json({ error: 'El usuario no coincide con la sesión activa' }, { status: 403 });
@@ -86,11 +92,6 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
 
   if (!token || amount === undefined || !paymentReference) {
     return NextResponse.json({ error: 'Token, monto y referencia de pago son obligatorios' }, { status: 400 });
-  }
-
-  const numericAmount = Number(amount);
-  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-    return NextResponse.json({ error: 'El monto debe ser un número positivo' }, { status: 400 });
   }
 
   if (tournament.status !== 'upcoming') {
@@ -105,12 +106,29 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'El usuario ya está inscrito en este torneo' }, { status: 400 });
   }
 
+  if (typeof token !== 'string' || (!isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token))) {
+    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
+  }
+
+  const normalizedToken = normalizeTokenIdentifier(token);
+  const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
+  if (!tokenKey || !SUPPORTED_TOKENS[tokenKey]) {
+    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
+  }
+
   let payment;
   try {
     payment = await findPaymentByReference(paymentReference);
   } catch (error) {
-    console.error('[join_tournament] Error inesperado', error);
-    return NextResponse.json({ error: 'Error interno al procesar la inscripción' }, { status: 500 });
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json({ error: 'Almacenamiento local no disponible' }, { status: 503 });
+    }
+    console.error('[join_tournament] Error consultando pago', error);
+    return NextResponse.json({ error: 'No se pudo validar el pago' }, { status: 500 });
+  }
+
+  if (!payment) {
+    return NextResponse.json({ error: 'Referencia de pago no encontrada' }, { status: 404 });
   }
 
   if (!payment) {
@@ -138,7 +156,7 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
   }
 
   const paymentWallet = payment.wallet_address?.toLowerCase();
-  const verifiedWallet = identity.wallet_address?.toLowerCase();
+  const verifiedWallet = worldId.wallet_address?.toLowerCase();
 
   if (paymentWallet && verifiedWallet && paymentWallet !== verifiedWallet) {
     return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
@@ -152,45 +170,24 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'La wallet proporcionada no coincide con la verificada' }, { status: 403 });
   }
 
-  if (
-    typeof token !== 'string' ||
-    (!isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token))
-  ) {
-    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
-  }
-
-  if (payment.token_address && normalizeTokenIdentifier(payment.token_address) !== normalizedToken) {
-    return NextResponse.json({ error: 'El token enviado no coincide con el pago' }, { status: 403 });
-  }
-
-  if (payment.token_amount && payment.token_amount !== expectedAmount) {
-    return NextResponse.json({ error: 'El monto enviado no coincide con el pago' }, { status: 403 });
-  }
-
-  const participantWallet = walletAddress ?? identity.wallet_address ?? payment.wallet_address;
-
-  if (refreshedTournament.currentPlayers >= refreshedTournament.maxPlayers) {
-    return NextResponse.json({ error: 'No hay cupos disponibles' }, { status: 400 });
+  const validation = validateTokenForTournament(tournament, tokenKey, payment.token_amount ?? amount);
+  if (!validation.valid) {
+    return NextResponse.json({ error: validation.message }, { status: 400 });
   }
 
   const participantWallet = walletAddress ?? worldId.wallet_address ?? payment.wallet_address;
 
   await addParticipantRecord(tournament.tournamentId, userId, paymentReference, participantWallet);
 
+  const sanitizedUsername = sanitizeUserText(username) ?? 'Nuevo jugador';
   const updatedTournament = (await getTournament(tournament.tournamentId)) ?? tournament;
 
-    if (walletAddress) {
-      await sendNotification({
-        walletAddresses: [walletAddress],
-        title: 'Inscripción confirmada',
-        message: 'Te has unido al torneo correctamente',
-        miniAppPath: `/tournament/${tournament.tournamentId}`,
-      });
-    }
-
-    return NextResponse.json({
-      success: true,
-      tournament: await serializeTournament(updatedTournament),
+  if (participantWallet) {
+    await sendNotification({
+      walletAddresses: [participantWallet],
+      title: 'Inscripción confirmada',
+      message: 'Te has unido al torneo correctamente',
+      miniAppPath: `/tournament/${tournament.tournamentId}`,
     });
   } catch (error) {
     if (isLocalStorageDisabled(error)) {
@@ -200,7 +197,9 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
       );
     }
 
-    console.error('[join_tournament] Error inesperado', error);
-    return NextResponse.json({ error: 'Error interno al procesar la inscripción' }, { status: 500 });
-  }
+  return NextResponse.json({
+    success: true,
+    tournament: await serializeTournament(updatedTournament),
+    participant: { userId, username: sanitizedUsername, walletAddress: participantWallet, score },
+  });
 }
