@@ -3,6 +3,7 @@ import { MEMECOIN_CONFIG, SUPPORTED_TOKENS, WLD_ADDRESS, USDC_ADDRESS } from './
 const SYMBOL_TO_ADDRESS: Record<string, string> = {
   WLD: WLD_ADDRESS,
   USDC: USDC_ADDRESS,
+  PUF: MEMECOIN_CONFIG.address,
   [MEMECOIN_CONFIG.symbol.toUpperCase()]: MEMECOIN_CONFIG.address,
 };
 
