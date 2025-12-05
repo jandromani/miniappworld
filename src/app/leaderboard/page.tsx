@@ -74,19 +74,40 @@ export default function LeaderboardPage() {
         </p>
       </header>
 
-      {loading && <p>Cargando leaderboard...</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && (
+        <p role="status" aria-live="polite">
+          Cargando leaderboard...
+        </p>
+      )}
+      {error && (
+        <p className="text-red-600" role="alert" aria-live="assertive">
+          {error}
+        </p>
+      )}
 
       {!loading && !error && (
         <div className="overflow-x-auto rounded-xl border shadow-sm">
-          <table className="min-w-full text-sm">
+          <table className="min-w-full text-sm" role="table">
+            <caption className="px-4 py-2 text-left text-gray-600">
+              Ranking con datos de usuario en vivo. Usa tabulación para navegar columnas.
+            </caption>
             <thead className="bg-gray-50 text-left text-gray-500">
               <tr>
-                <th className="px-4 py-3">Rank</th>
-                <th className="px-4 py-3">Usuario</th>
-                <th className="px-4 py-3">Puntos</th>
-                <th className="px-4 py-3">Torneos ganados</th>
-                <th className="px-4 py-3">Ganancias</th>
+                <th scope="col" className="px-4 py-3">
+                  Rank
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Usuario
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Puntos
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Torneos ganados
+                </th>
+                <th scope="col" className="px-4 py-3">
+                  Ganancias
+                </th>
               </tr>
             </thead>
             <tbody>

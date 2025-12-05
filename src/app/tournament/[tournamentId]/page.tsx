@@ -175,8 +175,16 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
         <p className="text-gray-600">Consulta el prize pool, inscripciones y leaderboard en vivo.</p>
       </header>
 
-      {loading && <p>Cargando información...</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && (
+        <p role="status" aria-live="polite">
+          Cargando información...
+        </p>
+      )}
+      {error && (
+        <p className="text-red-600" role="alert" aria-live="assertive">
+          {error}
+        </p>
+      )}
 
       {!loading && tournament && (
         <section className="grid gap-4 md:grid-cols-2">
@@ -278,13 +286,22 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
             </div>
 
             <div className="mt-3 overflow-x-auto">
-              <table className="min-w-full text-sm">
+              <table className="min-w-full text-sm" role="table">
+                <caption className="text-left text-gray-600">Top 10 del torneo con premios asignados.</caption>
                 <thead>
                   <tr className="text-left text-gray-500">
-                    <th className="py-2 pr-2">#</th>
-                    <th className="py-2 pr-2">Usuario</th>
-                    <th className="py-2 pr-2">Puntaje</th>
-                    <th className="py-2 pr-2">Premio</th>
+                    <th scope="col" className="py-2 pr-2">
+                      #
+                    </th>
+                    <th scope="col" className="py-2 pr-2">
+                      Usuario
+                    </th>
+                    <th scope="col" className="py-2 pr-2">
+                      Puntaje
+                    </th>
+                    <th scope="col" className="py-2 pr-2">
+                      Premio
+                    </th>
                   </tr>
                 </thead>
                 <tbody>

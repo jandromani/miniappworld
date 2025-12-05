@@ -121,3 +121,20 @@ export async function updatePlayerProfile(
 
   return store.players[playerIndex];
 }
+
+export async function exportPlayerProfile(userId: string) {
+  const store = await ensureStore();
+  return store.players.find((player) => player.userId === userId) ?? null;
+}
+
+export async function deletePlayerStats(userId: string) {
+  const store = await ensureStore();
+  const before = store.players.length;
+  store.players = store.players.filter((player) => player.userId !== userId);
+
+  if (store.players.length !== before) {
+    await saveStore(store);
+  }
+
+  return { removed: before - store.players.length };
+}

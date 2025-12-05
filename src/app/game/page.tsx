@@ -99,18 +99,20 @@ export default function GamePage() {
   };
 
   return (
-    <main className="mx-auto flex max-w-4xl flex-col gap-6 p-4 sm:p-6">
+    <main className="mx-auto flex max-w-4xl flex-col gap-6 p-4 sm:p-6" aria-labelledby="game-heading">
       <header className="flex flex-col gap-3 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-wide text-blue-700">Modo práctica</p>
-          <h1 className="text-2xl font-bold sm:text-3xl">Pantalla de juego</h1>
-          <p className="text-sm text-gray-600">
+          <h1 id="game-heading" className="text-2xl font-bold sm:text-3xl">
+            Pantalla de juego
+          </h1>
+          <p className="text-sm text-gray-600" id="question-hint">
             Responde las preguntas y obtén feedback háptico al instante. Optimizado para pantallas móviles.
           </p>
         </div>
         <div className="rounded-lg bg-white px-4 py-3 text-sm text-gray-700 shadow-inner">
           <p className="font-semibold">Sesión</p>
-          <p className="truncate text-gray-500" data-testid="session-id">
+          <p className="truncate text-gray-500" data-testid="session-id" aria-label="Identificador de sesión">
             {sessionId}
           </p>
         </div>
@@ -119,7 +121,9 @@ export default function GamePage() {
       <section className="space-y-4 rounded-xl border border-gray-100 bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <h2 className="text-xl font-semibold text-gray-900">{question.text}</h2>
+            <h2 className="text-xl font-semibold text-gray-900" aria-describedby="question-hint">
+              {question.text}
+            </h2>
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
               Trivia
             </span>
@@ -141,13 +145,14 @@ export default function GamePage() {
           </div>
         </div>
 
-        <div className="grid gap-3">
+        <div className="grid gap-3" role="group" aria-label="Opciones de respuesta">
           {question.options.map((option, index) => (
             <button
               key={option}
               type="button"
               className="w-full rounded-lg border border-gray-200 px-4 py-3 text-left text-sm font-medium text-gray-800 transition hover:-translate-y-0.5 hover:border-blue-500 hover:bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
               onClick={() => handleAnswerSelection(index)}
+              aria-describedby="question-hint"
             >
               {option}
             </button>
@@ -156,7 +161,11 @@ export default function GamePage() {
       </section>
 
       {feedback && (
-        <div className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-blue-800">
+        <div
+          className="rounded-md border border-blue-100 bg-blue-50 px-4 py-3 text-blue-800"
+          role="status"
+          aria-live="polite"
+        >
           {feedback}
         </div>
       )}
@@ -167,7 +176,7 @@ export default function GamePage() {
             <span className="font-semibold">Sincronización</span>
             <span className="text-xs rounded-full bg-gray-100 px-2 py-1 text-gray-600">Auto</span>
           </div>
-          <div className="flex flex-wrap items-center gap-3" data-testid="sync-status">
+          <div className="flex flex-wrap items-center gap-3" data-testid="sync-status" role="status" aria-live="polite">
             {saving ? <span>Guardando progreso...</span> : <span>Progreso sincronizado</span>}
             {lastSavedAt && <span className="text-gray-500">Último guardado: {lastSavedAt}</span>}
           </div>
