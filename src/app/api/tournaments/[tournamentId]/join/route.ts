@@ -15,7 +15,11 @@ import {
   findWorldIdVerificationByUser,
   recordAuditEvent,
 } from '@/lib/database';
-import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import {
+  isSupportedTokenAddress,
+  isSupportedTokenSymbol,
+  normalizeTokenIdentifier,
+} from '@/lib/tokenNormalization';
 import { rateLimit } from '@/lib/rateLimit';
 import { sendNotification } from '@/lib/notificationService';
 
@@ -78,6 +82,11 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     return NextResponse.json({ error: 'Token, monto y referencia de pago son obligatorios' }, { status: 400 });
   }
 
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return NextResponse.json({ error: 'El monto debe ser un número positivo' }, { status: 400 });
+  }
+
   if (tournament.status !== 'upcoming') {
     return NextResponse.json({ error: 'El torneo ya inició o finalizó' }, { status: 400 });
   }
@@ -124,6 +133,10 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
 
   if (paymentWallet && walletAddress && paymentWallet !== walletAddress.toLowerCase()) {
     return NextResponse.json({ error: 'La wallet proporcionada no coincide con el pago' }, { status: 403 });
+  }
+
+  if (typeof token !== 'string' || (!isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token))) {
+    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
   }
 
   const normalizedToken = normalizeTokenIdentifier(token);

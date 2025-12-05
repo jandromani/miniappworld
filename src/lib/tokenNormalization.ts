@@ -6,8 +6,21 @@ const SYMBOL_TO_ADDRESS: Record<string, string> = {
   [MEMECOIN_CONFIG.symbol.toUpperCase()]: MEMECOIN_CONFIG.address,
 };
 
-function isAddress(value: string) {
+export function isAddress(value: string) {
   return /^0x[a-fA-F0-9]{40}$/.test(value);
+}
+
+export function isSupportedTokenSymbol(value?: string): boolean {
+  if (!value) return false;
+  const upper = value.trim().toUpperCase();
+  return Boolean(upper && SYMBOL_TO_ADDRESS[upper]);
+}
+
+export function isSupportedTokenAddress(value?: string): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (!isAddress(trimmed)) return false;
+  return Object.values(SUPPORTED_TOKENS).some((token) => token.address.toLowerCase() === trimmed.toLowerCase());
 }
 
 export function normalizeTokenIdentifier(token?: string): string {
