@@ -7,6 +7,8 @@ comodines, endpoints de pagos y contrato de torneos en World Chain.
 ## Requisitos
 - Node.js 18+
 - Variables de entorno definidas en `.env` (ver `.env.example`).
+  - Define `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` para habilitar rate limiting distribuido entre réplicas. Si no están
+    presentes se usa un bucket en memoria (solo recomendado para desarrollo local).
 
 ## Scripts
 ```bash

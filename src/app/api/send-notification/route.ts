@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
@@ -17,7 +18,11 @@ type AuthResult = {
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 10;
 
-const rateLimitByKey = new Map<string, RateLimitEntry>();
+const notificationRateLimiter = createRateLimiter({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  maxRequests: RATE_LIMIT_MAX_REQUESTS,
+  prefix: 'notifications',
+});
 
 function getClientIp(req: NextRequest) {
   const forwarded = req.headers.get('x-forwarded-for');
@@ -82,20 +87,7 @@ async function authenticate(req: NextRequest): Promise<AuthResult> {
 }
 
 function checkRateLimit(apiKey: string) {
-  const now = Date.now();
-  const current = rateLimitByKey.get(apiKey);
-
-  if (!current || now - current.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    rateLimitByKey.set(apiKey, { windowStart: now, count: 1 });
-    return true;
-  }
-
-  if (current.count < RATE_LIMIT_MAX_REQUESTS) {
-    rateLimitByKey.set(apiKey, { ...current, count: current.count + 1 });
-    return true;
-  }
-
-  return false;
+  return notificationRateLimiter.limit(apiKey);
 }
 
 async function logAudit(event: {
@@ -142,6 +134,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
   }
 
+  const rateLimitResult = await checkRateLimit(providedKey!);
+  if (!rateLimitResult.allowed) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'rate_limited' });
   if (!checkRateLimit(providedKey)) {
     await logAudit({
       apiKey: providedKey,

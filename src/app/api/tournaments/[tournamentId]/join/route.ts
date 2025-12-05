@@ -28,7 +28,7 @@ type JoinParams = { tournamentId?: string; id?: string };
 
 export async function POST(req: NextRequest, { params }: { params: JoinParams }) {
   const rateKey = req.headers.get('x-real-ip') ?? req.headers.get('x-forwarded-for') ?? 'global';
-  const rate = rateLimit(rateKey);
+  const rate = await rateLimit(rateKey);
   if (!rate.allowed) {
     return NextResponse.json({ error: 'Límite de solicitudes alcanzado' }, { status: 429 });
   }
