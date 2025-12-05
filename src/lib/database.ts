@@ -14,6 +14,7 @@ export type WorldIdVerificationRecord = {
   user_id: string;
   session_token: string;
   created_at: string;
+  expires_at: string;
 };
 
 export type PaymentRecord = {
@@ -87,9 +88,10 @@ const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
 const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
 const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
+const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
 
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
-type AuditLogEntry = {
+export type AuditLogEntry = {
   timestamp: string;
   action: string;
   entity: string;
@@ -179,6 +181,10 @@ async function appendAuditLog(entry: AuditLogEntry) {
   }
 }
 
+export async function recordAuditEvent(event: Omit<AuditLogEntry, 'timestamp'>) {
+  await appendAuditLog({ ...event, timestamp: new Date().toISOString() });
+}
+
 async function ensureDbFile(): Promise<void> {
   await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
   try {
@@ -215,6 +221,50 @@ async function persistDb(db: DatabaseShape): Promise<void> {
   });
 }
 
+function isWorldIdVerificationExpired(record: WorldIdVerificationRecord, now: number) {
+  if (!record.expires_at) return false;
+  return new Date(record.expires_at).getTime() <= now;
+}
+
+function purgeExpiredWorldIdVerifications(db: DatabaseShape, now: number) {
+  const before = db.world_id_verifications.length;
+  db.world_id_verifications = db.world_id_verifications.filter(
+    (record) => !isWorldIdVerificationExpired(record, now)
+  );
+  return before - db.world_id_verifications.length;
+}
+
+async function withWorldIdCleanupSnapshot<T>(
+  operation: (db: DatabaseShape, now: number) => T | Promise<T>
+): Promise<T> {
+  return withDbLock(async () => {
+    const db = await loadDb();
+    const now = Date.now();
+    const removed = purgeExpiredWorldIdVerifications(db, now);
+    const result = await operation(db, now);
+
+    if (removed > 0) {
+      await persistDb(db);
+    }
+
+    return result;
+  });
+}
+
+export async function cleanupExpiredWorldIdVerifications(): Promise<number> {
+  return withDbLock(async () => {
+    const db = await loadDb();
+    const now = Date.now();
+    const removed = purgeExpiredWorldIdVerifications(db, now);
+
+    if (removed > 0) {
+      await persistDb(db);
+    }
+
+    return removed;
+  });
+}
+
 async function withDbTransaction<T>(operation: (db: DatabaseShape) => Promise<T>): Promise<T> {
   return withDbLock(async () => {
     const db = await loadDb();
@@ -244,7 +294,10 @@ function assertTournamentExists(db: DatabaseShape, tournamentId: string) {
 function assertUserExists(db: DatabaseShape, userId?: string, context?: AuditContext) {
   if (!userId || userId === 'anonymous' || context?.skipUserValidation) return;
 
-  const exists = db.world_id_verifications.some((entry) => entry.user_id === userId);
+  const now = Date.now();
+  const exists = db.world_id_verifications.some(
+    (entry) => entry.user_id === userId && !isWorldIdVerificationExpired(entry, now)
+  );
   if (!exists) {
     const error = new Error('User not found');
     (error as NodeJS.ErrnoException).code = 'USER_NOT_FOUND';
@@ -253,20 +306,25 @@ function assertUserExists(db: DatabaseShape, userId?: string, context?: AuditCon
 }
 
 export async function findWorldIdVerificationByNullifier(nullifier_hash: string) {
-  return withDbSnapshot((db) =>
+  return withWorldIdCleanupSnapshot((db) =>
     db.world_id_verifications.find((record) => record.nullifier_hash === nullifier_hash)
   );
 }
 
 export async function findWorldIdVerificationByUser(user_id: string) {
-  return withDbSnapshot((db) => db.world_id_verifications.find((record) => record.user_id === user_id));
+  return withWorldIdCleanupSnapshot((db) =>
+    db.world_id_verifications.find((record) => record.user_id === user_id)
+  );
 }
 
 export async function insertWorldIdVerification(
-  record: Omit<WorldIdVerificationRecord, 'created_at'>,
+  record: Omit<WorldIdVerificationRecord, 'created_at' | 'expires_at'>,
   context: AuditContext = {}
 ) {
   const entry = await withDbTransaction(async (db) => {
+    const now = Date.now();
+    purgeExpiredWorldIdVerifications(db, now);
+
     const exists = db.world_id_verifications.find(
       (item) => item.nullifier_hash === record.nullifier_hash
     );
@@ -279,7 +337,8 @@ export async function insertWorldIdVerification(
 
     const created: WorldIdVerificationRecord = {
       ...record,
-      created_at: new Date().toISOString(),
+      created_at: new Date(now).toISOString(),
+      expires_at: new Date(now + WORLD_ID_SESSION_TTL_MS).toISOString(),
     };
 
     db.world_id_verifications.push(created);
@@ -300,8 +359,9 @@ export async function insertWorldIdVerification(
 }
 
 export async function findWorldIdVerificationBySession(session_token: string) {
-  const db = await readDb();
-  return db.world_id_verifications.find((record) => record.session_token === session_token);
+  return withWorldIdCleanupSnapshot((db) =>
+    db.world_id_verifications.find((record) => record.session_token === session_token)
+  );
 }
 
 export async function createPaymentRecord(

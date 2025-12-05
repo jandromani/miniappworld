@@ -3,6 +3,7 @@ import {
   createPaymentRecord,
   findPaymentByReference,
   findWorldIdVerificationBySession,
+  recordAuditEvent,
 } from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
@@ -14,6 +15,14 @@ export async function POST(req: NextRequest) {
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
   if (!sessionToken) {
+    await recordAuditEvent({
+      action: 'initiate_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId: undefined,
+      status: 'error',
+      details: { reason: 'missing_session_token' },
+    });
     return NextResponse.json(
       { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
       { status: 401 }
@@ -23,6 +32,14 @@ export async function POST(req: NextRequest) {
   const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
 
   if (!sessionIdentity) {
+    await recordAuditEvent({
+      action: 'initiate_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: 'session_not_found' },
+    });
     return NextResponse.json(
       { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
       { status: 401 }
@@ -35,6 +52,10 @@ export async function POST(req: NextRequest) {
       { status: 403 }
     );
   }
+
+  const verifiedIdentity = sessionIdentity;
+  const verifiedUserId = sessionIdentity.user_id;
+  const verifiedWalletAddress = sessionIdentity.wallet_address;
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -107,7 +128,7 @@ export async function POST(req: NextRequest) {
     wallet_address: verifiedWalletAddress,
     nullifier_hash: sessionIdentity?.nullifier_hash,
     session_token: sessionToken,
-  });
+  }, { userId: verifiedUserId, sessionId: sessionToken });
 
   console.log('Pago iniciado:', { reference, type, token, amount, tournamentId });
 
