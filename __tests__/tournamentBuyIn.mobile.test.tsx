@@ -12,6 +12,14 @@ jest.mock('@/lib/paymentService', () => ({
   payForTournament: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('@/lib/haptics', () => ({
+  sendNotificationHaptics: jest.fn(),
+}));
+
+jest.mock('@/lib/useHapticsPreference', () => ({
+  useHapticsPreference: () => ({ hapticsEnabled: true }),
+}));
+
 describe('Tournament buy-in mobile experience', () => {
   it('shows stacked mode selector and CTA ready for mobile', () => {
     render(<TournamentBuyInPage />);

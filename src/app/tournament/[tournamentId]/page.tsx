@@ -20,6 +20,9 @@ import {
   resolveTokenFromAddress,
 } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import { SessionVerificationBar } from '@/components/SessionVerificationBar';
+import { sendNotificationHaptics } from '@/lib/haptics';
+import { useHapticsPreference } from '@/lib/useHapticsPreference';
 
 function formatToken(amount: string, tokenAddress: string) {
   try {
@@ -101,6 +104,9 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
   const [hasJoined, setHasJoined] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [selectedToken, setSelectedToken] = useState<SupportedToken | null>(null);
+  const [joinFeedback, setJoinFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const sessionId = useMemo(() => crypto.randomUUID(), []);
+  const { hapticsEnabled } = useHapticsPreference();
 
   const acceptedTokens = useMemo(() => {
     if (!tournament) return [];
@@ -146,6 +152,7 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
 
     setJoining(true);
     setJoinError(null);
+    setJoinFeedback(null);
 
     try {
       const amount =
@@ -156,9 +163,13 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
         amount
       );
       setHasJoined(true);
+      setJoinFeedback({ type: 'success', message: 'Te uniste al torneo. ¡Prepárate para jugar!' });
+      await sendNotificationHaptics('success', hapticsEnabled);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error al unirse al torneo';
       setJoinError(message);
+      setJoinFeedback({ type: 'error', message });
+      await sendNotificationHaptics('error', hapticsEnabled);
     } finally {
       setJoining(false);
     }
@@ -170,13 +181,25 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
 
   return (
     <main className="p-6 space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-bold">Detalles del torneo</h1>
-        <p className="text-gray-600">Consulta el prize pool, inscripciones y leaderboard en vivo.</p>
+      <header className="space-y-3">
+        <div className="space-y-2">
+          <h1 className="text-3xl font-bold">Detalles del torneo</h1>
+          <p className="text-gray-600">Consulta el prize pool, inscripciones y leaderboard en vivo.</p>
+        </div>
+
+        <SessionVerificationBar sessionId={sessionId} context="tournament" />
       </header>
 
-      {loading && <p>Cargando información...</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && (
+        <p role="status" aria-live="polite">
+          Cargando información...
+        </p>
+      )}
+      {error && (
+        <p className="text-red-600" role="alert" aria-live="assertive">
+          {error}
+        </p>
+      )}
 
       {!loading && tournament && (
         <section className="grid gap-4 md:grid-cols-2">
@@ -255,6 +278,7 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
                 className="rounded-lg bg-blue-600 px-4 py-2 text-white transition hover:bg-blue-700 disabled:opacity-60"
                 onClick={handleJoin}
                 disabled={!canJoin}
+                aria-busy={joining}
               >
                 {joining ? 'Procesando...' : 'Unirse al torneo'}
               </button>
@@ -267,6 +291,20 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
                 Jugar
               </button>
             </div>
+
+            {joinFeedback && (
+              <div
+                className={`mt-3 rounded-md border px-3 py-2 text-sm ${
+                  joinFeedback.type === 'success'
+                    ? 'border-green-200 bg-green-50 text-green-800'
+                    : 'border-red-200 bg-red-50 text-red-800'
+                }`}
+                role={joinFeedback.type === 'success' ? 'status' : 'alert'}
+                aria-live={joinFeedback.type === 'success' ? 'polite' : 'assertive'}
+              >
+                {joinFeedback.message}
+              </div>
+            )}
           </article>
 
           <article className="rounded-xl border p-4 shadow-sm">
