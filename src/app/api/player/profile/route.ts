@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { findWorldIdVerificationBySession } from '@/lib/database';
+import { requireActiveSession } from '@/lib/sessionValidation';
 import { updatePlayerProfile } from '@/lib/server/playerStatsStore';
 
 function validateAlias(alias?: string) {
@@ -20,16 +20,13 @@ function validateAvatarUrl(url?: string) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const session = req.cookies.get('session_token');
+  const sessionResult = await requireActiveSession(req, { path: 'player/profile' });
 
-  if (!session) {
-    return NextResponse.json({ error: 'Usuario no verificado' }, { status: 401 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
 
-  const identity = await findWorldIdVerificationBySession(session.value);
-  if (!identity) {
-    return NextResponse.json({ error: 'Sesión expirada o inválida' }, { status: 401 });
-  }
+  const { identity } = sessionResult;
 
   const body = await req.json();
   const { alias, avatarUrl } = body as { alias?: string; avatarUrl?: string };

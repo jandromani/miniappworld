@@ -686,9 +686,17 @@ async function persistDb(db: DatabaseShape): Promise<void> {
   });
 }
 
+function resolveWorldIdExpiry(record: WorldIdVerificationRecord) {
+  const createdAt = new Date(record.created_at).getTime();
+  const fromCreatedAt = Number.isNaN(createdAt) ? Number.POSITIVE_INFINITY : createdAt + WORLD_ID_SESSION_TTL_MS;
+  const expiresAtFromRecord = record.expires_at ? new Date(record.expires_at).getTime() : Number.POSITIVE_INFINITY;
+
+  return Math.min(fromCreatedAt, expiresAtFromRecord);
+}
+
 function isWorldIdVerificationExpired(record: WorldIdVerificationRecord, now: number) {
-  if (!record.expires_at) return false;
-  return new Date(record.expires_at).getTime() <= now;
+  const expiresAt = resolveWorldIdExpiry(record);
+  return expiresAt <= now;
 }
 
 function purgeExpiredWorldIdVerifications(db: DatabaseShape, now: number) {
@@ -700,7 +708,7 @@ function purgeExpiredWorldIdVerifications(db: DatabaseShape, now: number) {
 }
 
 function cacheWorldIdVerification(record: WorldIdVerificationRecord) {
-  const expiresAt = new Date(record.expires_at ?? Date.now() + WORLD_ID_SESSION_TTL_MS).getTime();
+  const expiresAt = resolveWorldIdExpiry(record);
   const cached: CachedVerification = { record, expiresAt };
 
   worldIdCacheByNullifier.set(record.nullifier_hash, cached);
