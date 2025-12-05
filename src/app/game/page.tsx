@@ -1,7 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { MiniKit } from '@worldcoin/minikit-js';
+
+import { useHapticsPreference } from '@/lib/useHapticsPreference';
 
 type MockQuestion = {
   id: string;
@@ -22,21 +24,35 @@ const sampleQuestions: MockQuestion[] = [
 export default function GamePage() {
   const [question] = useState<MockQuestion>(sampleQuestions[0]);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const { hapticsEnabled } = useHapticsPreference();
 
-  const handleAnswerSelection = (selectedIndex: number) => {
+  const sendHaptics = useCallback(
+    async (isCorrect: boolean) => {
+      if (!hapticsEnabled) return;
+
+      try {
+        await MiniKit.commandsAsync.sendHapticFeedback({
+          hapticsType: 'impact',
+          style: 'light',
+        });
+
+        await MiniKit.commandsAsync.sendHapticFeedback({
+          hapticsType: 'notification',
+          style: isCorrect ? 'success' : 'error',
+        });
+      } catch (error) {
+        console.warn('No se pudo enviar feedback háptico', error);
+      }
+    },
+    [hapticsEnabled],
+  );
+
+  const handleAnswerSelection = async (selectedIndex: number) => {
     const isCorrect = selectedIndex === question.correctIndex;
 
-    MiniKit.commands.sendHapticFeedback({
-      hapticsType: 'impact',
-      style: 'light',
-    });
-
-    MiniKit.commands.sendHapticFeedback({
-      hapticsType: 'notification',
-      style: isCorrect ? 'success' : 'error',
-    });
-
     setFeedback(isCorrect ? '¡Respuesta correcta!' : 'Respuesta incorrecta.');
+
+    await sendHaptics(isCorrect);
   };
 
   return (
