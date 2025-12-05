@@ -261,7 +261,14 @@ export async function POST(req: NextRequest) {
       session_token: sessionToken,
     }, { userId: verifiedUserId, sessionId: sessionToken });
 
-    console.log('Pago iniciado:', { reference, type, token, amount, tournamentId });
+    logApiEvent('info', {
+      event: 'payment_initiated',
+      reference,
+      type,
+      token,
+      amount,
+      tournamentId,
+    });
 
     return NextResponse.json({ success: true, reference, tournamentId });
   } catch (error) {
