@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { LeaderboardEntry, Tournament } from '@/lib/types';
+import { sanitizeText } from '@/lib/sanitize';
 import {
   getTournamentDetails,
   getTournamentLeaderboard,
@@ -51,6 +52,36 @@ function useTournamentData(tournamentId: string) {
     load();
   }, [tournamentId]);
 
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const connectSse = () => {
+      eventSource?.close();
+      eventSource = new EventSource(`/api/tournaments/${tournamentId}/leaderboard/stream`);
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data) as LeaderboardEntry[];
+        setLeaderboard(data.slice(0, 10));
+        setError(null);
+      };
+
+      eventSource.onerror = () => {
+        setError((current) => current ?? 'Conexión en vivo interrumpida, reintentando...');
+        eventSource?.close();
+        if (retryTimeout) clearTimeout(retryTimeout);
+        retryTimeout = setTimeout(connectSse, 4000);
+      };
+    };
+
+    connectSse();
+
+    return () => {
+      eventSource?.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
+  }, [tournamentId]);
+
   return { tournament, leaderboard, loading, error };
 }
 
@@ -79,10 +110,16 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
     setSelectedToken(preferredToken ?? acceptedTokens[0] ?? null);
   }, [acceptedTokens, tournament]);
 
-  const canJoin = useMemo(
-    () => tournament?.status === 'upcoming' && !joining && !!selectedToken,
-    [tournament?.status, joining, selectedToken]
-  );
+  const canJoin = useMemo(() => {
+    if (!tournament) return false;
+
+    return (
+      tournament.status === 'active' &&
+      tournament.currentPlayers < tournament.maxPlayers &&
+      !joining &&
+      !!selectedToken
+    );
+  }, [joining, selectedToken, tournament]);
 
   const canPlay = useMemo(
     () => tournament?.status === 'active' && (hasJoined || !!leaderboard.find((e) => e.isCurrentUser)),
@@ -249,7 +286,7 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
                       className={entry.isCurrentUser ? 'bg-blue-50 font-semibold' : ''}
                     >
                       <td className="py-2 pr-2">{entry.rank}</td>
-                      <td className="py-2 pr-2">{entry.username}</td>
+                      <td className="py-2 pr-2">{sanitizeText(entry.username) || 'Usuario'}</td>
                       <td className="py-2 pr-2">{entry.score}</td>
                       <td className="py-2 pr-2">
                         {entry.prize ? formatToken(entry.prize, tournament.buyInToken) : '-'}
