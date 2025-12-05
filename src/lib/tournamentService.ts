@@ -22,7 +22,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export async function getActiveTournaments(): Promise<Tournament[]> {
-  const response = await fetch(`${BASE_PATH}?status=active,upcoming`, { cache: 'no-store' });
+  const response = await fetch(`${BASE_PATH}?status=active,upcoming`);
   const data = await handleResponse<Tournament[]>(response);
 
   return data
@@ -31,7 +31,7 @@ export async function getActiveTournaments(): Promise<Tournament[]> {
 }
 
 export async function getTournamentDetails(tournamentId: string): Promise<Tournament> {
-  const response = await fetch(`${BASE_PATH}/${tournamentId}`, { cache: 'no-store' });
+  const response = await fetch(`${BASE_PATH}/${tournamentId}`);
   const data = await handleResponse<Tournament>(response);
 
   return parseTournamentDates(data);
@@ -48,13 +48,17 @@ export async function joinTournament(
     throw new Error('Debes verificar tu identidad antes de unirte al torneo');
   }
 
-  await payForTournament(token, amount, tournamentId);
+  const paymentResult = await payForTournament(token, amount, tournamentId);
+
+  if (!paymentResult?.reference) {
+    throw new Error('No se obtuvo referencia de pago');
+  }
 
   const response = await fetch(`${BASE_PATH}/${tournamentId}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ token, amount, userId }),
+    body: JSON.stringify({ token, amount, userId, paymentReference: paymentResult.reference }),
   });
 
   await handleResponse<void>(response);
