@@ -9,10 +9,16 @@ import {
   serializeTournament,
   validateTokenForTournament,
 } from '@/lib/server/tournamentData';
-import { findPaymentByReference, findWorldIdVerificationByUser } from '@/lib/database';
+import {
+  findPaymentByReference,
+  findWorldIdVerificationBySession,
+  findWorldIdVerificationByUser,
+} from '@/lib/database';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 import { rateLimit } from '@/lib/rateLimit';
 import { sendNotification } from '@/lib/notificationService';
+
+const SESSION_COOKIE = 'session_token';
 
 export async function POST(req: NextRequest, { params }: { params: { tournamentId: string } }) {
   const rateKey = req.headers.get('x-real-ip') ?? req.headers.get('x-forwarded-for') ?? 'global';
@@ -28,13 +34,26 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
   }
 
   const { token, amount, userId: bodyUserId, username, walletAddress, score, paymentReference } = await req.json();
-  const userId = req.headers.get('x-user-id') ?? bodyUserId;
+  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
-  if (!userId) {
-    return NextResponse.json({ error: 'Usuario no autenticado' }, { status: 401 });
+  if (!sessionToken) {
+    return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
   }
 
+  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+
+  if (!sessionIdentity) {
+    return NextResponse.json({ error: 'La sesión no es válida o expiró' }, { status: 401 });
+  }
+
+  if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
+    return NextResponse.json({ error: 'El usuario no coincide con la sesión activa' }, { status: 403 });
+  }
+
+  const userId = sessionIdentity.user_id;
+
   const worldId = await findWorldIdVerificationByUser(userId);
+
   if (!worldId) {
     return NextResponse.json({ error: 'World ID no verificado para este usuario' }, { status: 403 });
   }
