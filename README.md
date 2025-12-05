@@ -34,6 +34,8 @@ World ID y `sendHapticFeedback` para feedback táctil.
 - `contracts/TournamentManager.sol`: Contrato principal para registrar torneos, manejar buy-ins y distribuir premios usando ERC-20.
 - `contracts/TournamentPool.sol`: Contrato simple para pools de torneos (ejemplo legacy).
 
+La capa de persistencia vive en `src/lib/database.ts`, que centraliza pagos, torneos y auditorías. El store antiguo de pagos fue retirado para evitar caminos de importación duplicados.
+
 ## Páginas
 - `/`: Overview del proyecto y fases.
 - `/game`: Juego de trivia con 15 preguntas, temporizador y comodines (50/50, salto, público).
