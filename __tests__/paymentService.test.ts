@@ -29,7 +29,9 @@ describe('paymentService', () => {
     } as any);
 
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({}));
-    (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({ success: true }));
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      createFetchResponse({ success: true, reference: 'ref-123', transactionId: 'tx-1' })
+    );
 
     await expect(payForQuickMatch()).resolves.toEqual({ success: true, reference: expect.any(String) });
 
@@ -63,7 +65,9 @@ describe('paymentService', () => {
     } as any);
 
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({}));
-    (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({ success: true }));
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      createFetchResponse({ success: true, reference: 'ref-456', transactionId: 'tx-2' })
+    );
 
     const payment = await payForTournament('MEMECOIN', 5, 'demo-tournament');
 

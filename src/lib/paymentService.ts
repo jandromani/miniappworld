@@ -80,6 +80,12 @@ function handlePayError(finalPayload: MiniAppPaymentErrorPayload): never {
   throw new Error(message);
 }
 
+type ConfirmPaymentResult = {
+  success: boolean;
+  reference: string;
+  transactionId?: string;
+};
+
 async function confirmPayment(
   payload: MiniAppPaymentSuccessPayload,
   reference: string
@@ -133,7 +139,7 @@ async function executePayCommand({
 /**
  * Pagar por partida rápida (1 WLD)
  */
-export async function payForQuickMatch() {
+export async function payForQuickMatch(): Promise<ConfirmPaymentResult> {
   const reference = uuidv4().replace(/-/g, '');
 
   await initiatePayment({ reference, type: 'quick_match' });
@@ -151,7 +157,11 @@ export async function payForQuickMatch() {
 /**
  * Pagar por torneo (buy-in configurable)
  */
-export async function payForTournament(token: SupportedToken, amount: number, tournamentId?: string) {
+export async function payForTournament(
+  token: SupportedToken,
+  amount: number,
+  tournamentId?: string
+): Promise<ConfirmPaymentResult> {
   const reference = uuidv4().replace(/-/g, '');
 
   await initiatePayment({ reference, type: 'tournament', token, amount, tournamentId });

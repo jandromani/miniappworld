@@ -199,6 +199,12 @@ export async function POST(req: NextRequest) {
   }
 
   if (storedPayment.status === 'confirmed') {
+    return NextResponse.json({
+      success: true,
+      message: 'Pago ya confirmado previamente',
+      reference,
+      transactionId: storedPayment.transaction_id,
+    });
     logApiEvent('info', {
       path: PATH,
       action: 'already_confirmed',
@@ -499,11 +505,12 @@ export async function POST(req: NextRequest) {
 
   if (isSuccessful) {
     const confirmedAt = new Date().toISOString();
+    const transactionId = payload.transaction_id;
     await updatePaymentStatus(
       reference,
       'confirmed',
       {
-        transaction_id: payload.transaction_id,
+        transaction_id: transactionId,
         confirmed_at: confirmedAt,
       },
       { userId: storedPayment.user_id, sessionId }
@@ -535,6 +542,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    return NextResponse.json({
+      success: true,
+      message: 'Pago confirmado',
+      reference,
+      transactionId,
+    });
     logApiEvent('info', {
       path: PATH,
       action: 'confirmed',
