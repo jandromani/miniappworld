@@ -3,6 +3,7 @@ import { MiniAppPaymentSuccessPayload } from '@worldcoin/minikit-js';
 import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
+  isLocalStorageDisabled,
   recordAuditEvent,
   updatePaymentStatus,
 } from '@/lib/database';
@@ -19,94 +20,95 @@ function normalizeTokenAmount(value: unknown): bigint {
 }
 
 export async function POST(req: NextRequest) {
-  const { payload, reference } = (await req.json()) as {
-    payload: MiniAppPaymentSuccessPayload;
-    reference: string;
-  };
+  try {
+    const { payload, reference } = (await req.json()) as {
+      payload: MiniAppPaymentSuccessPayload;
+      reference: string;
+    };
 
-  const sessionToken = req.cookies.get('session_token')?.value;
-  const sessionId = sessionToken;
+    const sessionToken = req.cookies.get('session_token')?.value;
+    const sessionId = sessionToken;
 
-  if (!sessionToken) {
-    await recordAuditEvent({
-      action: 'confirm_payment',
-      entity: 'payments',
-      entityId: reference,
-      status: 'error',
-      details: { reason: 'missing_session_token' },
-    });
+    if (!sessionToken) {
+      await recordAuditEvent({
+        action: 'confirm_payment',
+        entity: 'payments',
+        entityId: reference,
+        status: 'error',
+        details: { reason: 'missing_session_token' },
+      });
 
-    return NextResponse.json(
-      { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
-      { status: 401 }
-    );
-  }
-
-  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
-
-  if (!sessionIdentity) {
-    await recordAuditEvent({
-      action: 'confirm_payment',
-      entity: 'payments',
-      entityId: reference,
-      sessionId,
-      status: 'error',
-      details: { reason: 'session_not_found' },
-    });
-
-    return NextResponse.json(
-      { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
-      { status: 401 }
-    );
-  }
-
-  if (!payload || !reference) {
-    return NextResponse.json(
-      { success: false, message: 'Payload y referencia son obligatorios' },
-      { status: 400 }
-    );
-  }
-
-  if (payload.status === 'error') {
-    return NextResponse.json({ success: false, message: 'Pago rechazado' }, { status: 400 });
-  }
-
-  const storedPayment = await findPaymentByReference(reference);
-
-  if (!storedPayment) {
-    return NextResponse.json({ success: false, message: 'Referencia no encontrada' }, { status: 400 });
-  }
-
-  if (storedPayment.status === 'confirmed') {
-    return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
-  }
-
-  if (!process.env.APP_ID || !process.env.DEV_PORTAL_API_KEY) {
-    return NextResponse.json(
-      { success: false, message: 'Faltan APP_ID o DEV_PORTAL_API_KEY' },
-      { status: 500 }
-    );
-  }
-
-  // 2. Consultar estado del pago en Developer Portal API
-  const response = await fetch(
-    `https://developer.worldcoin.org/api/v2/minikit/transaction/${payload.transaction_id}?app_id=${process.env.APP_ID}&type=payment`,
-    {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
-      },
+      return NextResponse.json(
+        { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
+        { status: 401 }
+      );
     }
-  );
 
-  if (!response.ok) {
-    return NextResponse.json(
-      { success: false, message: 'No se pudo verificar el pago en Developer Portal' },
-      { status: 502 }
+    const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+
+    if (!sessionIdentity) {
+      await recordAuditEvent({
+        action: 'confirm_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId,
+        status: 'error',
+        details: { reason: 'session_not_found' },
+      });
+
+      return NextResponse.json(
+        { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
+        { status: 401 }
+      );
+    }
+
+    if (!payload || !reference) {
+      return NextResponse.json(
+        { success: false, message: 'Payload y referencia son obligatorios' },
+        { status: 400 }
+      );
+    }
+
+    if (payload.status === 'error') {
+      return NextResponse.json({ success: false, message: 'Pago rechazado' }, { status: 400 });
+    }
+
+    const storedPayment = await findPaymentByReference(reference);
+
+    if (!storedPayment) {
+      return NextResponse.json({ success: false, message: 'Referencia no encontrada' }, { status: 400 });
+    }
+
+    if (storedPayment.status === 'confirmed') {
+      return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
+    }
+
+    if (!process.env.APP_ID || !process.env.DEV_PORTAL_API_KEY) {
+      return NextResponse.json(
+        { success: false, message: 'Faltan APP_ID o DEV_PORTAL_API_KEY' },
+        { status: 500 }
+      );
+    }
+
+    // 2. Consultar estado del pago en Developer Portal API
+    const response = await fetch(
+      `https://developer.worldcoin.org/api/v2/minikit/transaction/${payload.transaction_id}?app_id=${process.env.APP_ID}&type=payment`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
+        },
+      }
     );
-  }
 
-  const transaction = await response.json();
+    if (!response.ok) {
+      return NextResponse.json(
+        { success: false, message: 'No se pudo verificar el pago en Developer Portal' },
+        { status: 502 }
+      );
+    }
+
+    const transaction = await response.json();
 
   const transactionWallet =
     transaction.wallet_address ||
@@ -370,6 +372,23 @@ export async function POST(req: NextRequest) {
   await updatePaymentStatus(reference, 'failed', { reason: failureMessage }, { userId: storedPayment.user_id, sessionId });
 
   return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
+  } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Persistencia local deshabilitada. Configure un directorio compartido o servicio de storage.',
+        },
+        { status: 503 }
+      );
+    }
+
+    console.error('[confirm-payment] Error inesperado', error);
+    return NextResponse.json(
+      { success: false, message: 'No se pudo confirmar el pago. Intente nuevamente más tarde.' },
+      { status: 500 }
+    );
+  }
 }
 
 function getFailureMessage(status: string) {

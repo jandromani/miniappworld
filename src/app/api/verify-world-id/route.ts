@@ -5,6 +5,7 @@ import {
   findWorldIdVerificationByNullifier,
   findWorldIdVerificationByUser,
   insertWorldIdVerification,
+  isLocalStorageDisabled,
 } from '@/lib/database';
 
 const SESSION_COOKIE = 'session_token';
@@ -131,6 +132,13 @@ export async function POST(req: NextRequest) {
 
     return response;
   } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json(
+        { success: false, error: 'Persistencia local deshabilitada. Configure almacenamiento compartido o servicio remoto.' },
+        { status: 503 }
+      );
+    }
+
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code === 'DUPLICATE_NULLIFIER') {
       return NextResponse.json(
