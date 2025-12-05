@@ -6,9 +6,9 @@ import { findWorldIdVerificationBySession, recordAuditEvent, recordTournament } 
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 
 const SUPPORTED_ADDRESSES = [
-  WLD_ADDRESS.toLowerCase(),
-  USDC_ADDRESS.toLowerCase(),
-  MEMECOIN_CONFIG.address.toLowerCase(),
+  normalizeTokenIdentifier(WLD_ADDRESS),
+  normalizeTokenIdentifier(USDC_ADDRESS),
+  normalizeTokenIdentifier(MEMECOIN_CONFIG.address),
 ];
 
 const SESSION_COOKIE = 'session_token';
@@ -60,12 +60,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  let lowerBuyIn: string;
+  let normalizedBuyIn: string;
   let normalizedAccepted: string[];
 
   try {
-    lowerBuyIn = normalizeTokenIdentifier(String(buyInToken));
-    normalizedAccepted = (acceptedTokens ?? [buyInToken]).map((token: string) => normalizeTokenIdentifier(token));
+    normalizedBuyIn = normalizeTokenIdentifier(String(buyInToken));
+    normalizedAccepted = (acceptedTokens ?? [buyInToken]).map((token: string) =>
+      normalizeTokenIdentifier(String(token))
+    );
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 400 });
   }
@@ -93,16 +95,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Prize distribution exceeds expected winners' }, { status: 400 });
   }
 
-  const lowerBuyIn = String(buyInToken).toLowerCase();
-  if (!SUPPORTED_ADDRESSES.includes(lowerBuyIn)) {
-    return apiErrorResponse('UNSUPPORTED_TOKEN', {
-      message: 'Token not supported',
-      details: { buyInToken },
-      path: 'tournaments/create',
-    });
-  }
-
-  const invalid = normalizedAccepted.find((token: string) => !SUPPORTED_ADDRESSES.includes(token));
+  const invalid = [normalizedBuyIn, ...normalizedAccepted].find(
+    (token) => !SUPPORTED_ADDRESSES.includes(token)
+  );
 
   if (invalid) {
     return apiErrorResponse('UNSUPPORTED_TOKEN', {
@@ -118,6 +113,8 @@ export async function POST(req: NextRequest) {
     tournamentName: name,
     buyInToken,
     maxPlayers,
+  });
+
   let normalizedBuyInAmount: bigint;
   try {
     normalizedBuyInAmount = BigInt(buyInAmount);
@@ -135,7 +132,7 @@ export async function POST(req: NextRequest) {
   const parsedStart = new Date(startTime);
   const parsedEnd = new Date(endTime);
 
-  if (isNaN(parsedStart.getTime()) || isNaN(parsedEnd.getTime())) {
+  if (Number.isNaN(parsedStart.getTime()) || Number.isNaN(parsedEnd.getTime())) {
     return NextResponse.json({ error: 'Las fechas de inicio y fin son inválidas' }, { status: 400 });
   }
 
@@ -158,7 +155,7 @@ export async function POST(req: NextRequest) {
   await recordTournament({
     tournament_id: tournamentId,
     name,
-    buy_in_token: lowerBuyIn,
+    buy_in_token: normalizedBuyIn,
     accepted_tokens: normalizedAccepted,
     buy_in_amount: normalizedBuyInAmount.toString(),
     prize_pool: '0',
@@ -177,27 +174,30 @@ export async function POST(req: NextRequest) {
     sessionId: sessionToken,
     status: 'success',
     details: {
-      buyInToken: lowerBuyIn,
+      buyInToken: normalizedBuyIn,
       buyInAmount: normalizedBuyInAmount.toString(),
       startTime: parsedStart.toISOString(),
       endTime: parsedEnd.toISOString(),
     },
   });
 
-  return NextResponse.json({
-    success: true,
-    tournament: {
-      tournamentId,
-      name,
-      buyInToken: lowerBuyIn,
-      buyInAmount: normalizedBuyInAmount.toString(),
-      maxPlayers,
-      startTime: parsedStart.toISOString(),
-      endTime: parsedEnd.toISOString(),
-      acceptedTokens: normalizedAccepted,
-      prizeDistribution,
-      status: 'upcoming',
-      prizePool: '0',
+  return NextResponse.json(
+    {
+      success: true,
+      tournament: {
+        tournamentId,
+        name,
+        buyInToken: normalizedBuyIn,
+        buyInAmount: normalizedBuyInAmount.toString(),
+        maxPlayers,
+        startTime: parsedStart.toISOString(),
+        endTime: parsedEnd.toISOString(),
+        acceptedTokens: normalizedAccepted,
+        prizeDistribution,
+        status: 'upcoming',
+        prizePool: '0',
+      },
     },
-  }, { status: 201 });
+    { status: 201 }
+  );
 }

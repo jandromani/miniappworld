@@ -11,6 +11,8 @@ interface Vm {
     function stopPrank() external;
     function expectRevert(bytes calldata) external;
     function expectRevert() external;
+    function expectEmit(bool, bool, bool, bool) external;
+    function expectEmit(bool, bool, bool, bool, address) external;
 }
 
 contract Test {
@@ -29,6 +31,12 @@ contract Test {
     }
 }
 
+contract SixDecimalToken is MockERC20 {
+    constructor() MockERC20("PUF Token", "PUF") {
+        decimals = 6;
+    }
+}
+
 contract TournamentManagerTest is Test {
     TournamentManager internal manager;
     MockERC20 internal token;
@@ -39,6 +47,9 @@ contract TournamentManagerTest is Test {
     address internal carol = address(0x3);
 
     uint256 internal constant BUY_IN = 1 ether;
+
+    event PlayerJoined(bytes32 indexed tournamentId, address indexed player, uint256 buyInAmount);
+    event PrizesDistributed(bytes32 indexed tournamentId, address[] winners, uint256[] prizes);
 
     function setUp() public {
         manager = new TournamentManager(address(this));
@@ -183,5 +194,71 @@ contract TournamentManagerTest is Test {
         assertEq(token.balanceOf(bob), 10 ether - BUY_IN + expectedFirst, "bob prize");
         assertEq(token.balanceOf(carol), 10 ether - BUY_IN + expectedSecond, "carol prize");
         assertEq(token.balanceOf(alice), 10 ether - BUY_IN + expectedThird, "alice prize");
+    }
+
+    function testPufTokenFlowEmitsEventsAndPaysWithDecimals() public {
+        TournamentManager pufManager = new TournamentManager(address(this));
+        SixDecimalToken puf = new SixDecimalToken();
+        bytes32 pufTournamentId = keccak256("puf-cup");
+
+        uint16[] memory distribution = new uint16[](2);
+        distribution[0] = 7000;
+        distribution[1] = 3000;
+
+        uint256 start = block.timestamp + 5;
+        uint256 end = start + 30 minutes;
+        uint256 buyIn = 5 * 10 ** puf.decimals();
+
+        pufManager.createTournament(pufTournamentId, start, end, address(puf), buyIn, 2, distribution);
+
+        uint256 initialBalance = 1000 * 10 ** puf.decimals();
+        puf.mint(alice, initialBalance);
+        puf.mint(bob, initialBalance);
+
+        vm.startPrank(alice);
+        puf.approve(address(pufManager), buyIn);
+        vm.expectEmit(true, true, true, true, address(pufManager));
+        emit PlayerJoined(pufTournamentId, alice, buyIn);
+        pufManager.joinTournament(pufTournamentId);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        puf.approve(address(pufManager), buyIn);
+        vm.expectEmit(true, true, true, true, address(pufManager));
+        emit PlayerJoined(pufTournamentId, bob, buyIn);
+        pufManager.joinTournament(pufTournamentId);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + 1 hours);
+        pufManager.submitScore(pufTournamentId, alice, 10);
+        pufManager.submitScore(pufTournamentId, bob, 100);
+
+        pufManager.finalizeTournament(pufTournamentId);
+
+        uint256 poolBefore = puf.balanceOf(address(pufManager));
+
+        address[] memory expectedWinners = new address[](2);
+        expectedWinners[0] = bob;
+        expectedWinners[1] = alice;
+
+        uint256[] memory expectedPrizes = new uint256[](2);
+        expectedPrizes[0] = (poolBefore * distribution[0]) / pufManager.PRIZE_DISTRIBUTION_SCALE();
+        expectedPrizes[1] = (poolBefore * distribution[1]) / pufManager.PRIZE_DISTRIBUTION_SCALE();
+
+        vm.expectEmit(true, true, true, true, address(pufManager));
+        emit PrizesDistributed(pufTournamentId, expectedWinners, expectedPrizes);
+        pufManager.distributePrizes(pufTournamentId);
+
+        assertEq(
+            puf.balanceOf(bob),
+            initialBalance - buyIn + expectedPrizes[0],
+            "bob should receive first prize"
+        );
+        assertEq(
+            puf.balanceOf(alice),
+            initialBalance - buyIn + expectedPrizes[1],
+            "alice should receive second prize"
+        );
+        assertEq(puf.balanceOf(address(pufManager)), 0, "pool should be emptied");
     }
 }

@@ -13,6 +13,7 @@ import {
 } from './constants';
 import { payWithMiniKit } from './miniKitClient';
 import { fetchWithBackoff } from './fetchWithBackoff';
+import { normalizeTokenIdentifier } from './tokenNormalization';
 
 const RECEIVER_ADDRESS = process.env.NEXT_PUBLIC_RECEIVER_ADDRESS || '0xYourAddress';
 
@@ -42,9 +43,12 @@ function getTokenConfig(token: SupportedToken, amount: number): TokenConfig {
   const config = SUPPORTED_TOKENS[token];
 
   if (token === 'MEMECOIN') {
+    const normalized = normalizeTokenIdentifier(MEMECOIN_CONFIG.address);
+    const scaledAmount = BigInt(Math.round(amount * 10 ** config.decimals)).toString();
+
     return {
-      symbol: MEMECOIN_CONFIG.address,
-      token_amount: (amount * 10 ** config.decimals).toString(),
+      symbol: normalized,
+      token_amount: scaledAmount,
     };
   }
 
