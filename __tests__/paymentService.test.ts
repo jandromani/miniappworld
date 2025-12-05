@@ -1,6 +1,7 @@
 import { payForQuickMatch, payForTournament } from '@/lib/paymentService';
 import { MEMECOIN_CONFIG, SUPPORTED_TOKENS } from '@/lib/constants';
 import { payWithMiniKit } from '@/lib/miniKitClient';
+import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 
 jest.mock('@/lib/miniKitClient', () => ({
   payWithMiniKit: jest.fn(),
@@ -57,10 +58,12 @@ describe('paymentService', () => {
   });
 
   it('paga torneo con MEMECOIN convirtiendo montos y referencia', async () => {
+    const normalizedMemeAddress = normalizeTokenIdentifier(MEMECOIN_CONFIG.address);
+
     payWithMiniKitMock.mockResolvedValue({
       status: 'success',
       reference: 'ref-456',
-      token: MEMECOIN_CONFIG.address,
+      token: normalizedMemeAddress,
       token_amount: '5000000000000000000',
     } as any);
 
@@ -76,7 +79,7 @@ describe('paymentService', () => {
         reference: expect.any(String),
         tokens: [
           expect.objectContaining({
-            symbol: MEMECOIN_CONFIG.address,
+            symbol: normalizedMemeAddress,
             token_amount: '5000000000000000000',
           }),
         ],
