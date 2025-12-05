@@ -7,11 +7,25 @@ import { useRouter } from 'next/navigation';
 export default function Home() {
   const router = useRouter();
   const [userId, setUserId] = useState<string | null>(null);
+  const [hasSession, setHasSession] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+
+  const getSessionFromCookies = () => {
+    if (typeof document === 'undefined') return null;
+    const cookie = document.cookie
+      .split('; ')
+      .find((entry) => entry.startsWith('session_token='));
+    return cookie?.split('=')[1] ?? null;
+  };
+
+  const updateSessionState = () => {
+    setHasSession(Boolean(getSessionFromCookies()));
+  };
 
   useEffect(() => {
     // Verificar World ID al cargar la app (solo una vez)
     const storedUserId = localStorage.getItem('userId');
+    updateSessionState();
     if (!storedUserId && MiniKit.isInstalled()) {
       verifyUser();
     } else {
@@ -45,6 +59,7 @@ export default function Home() {
         if (res.ok && data?.success) {
           localStorage.setItem('userId', data.userId);
           setUserId(data.userId);
+          updateSessionState();
         } else {
           const message = data?.error ?? 'Error al verificar World ID';
           alert(message);
@@ -78,6 +93,18 @@ export default function Home() {
   return (
     <div className="flex flex-col items-center justify-center h-screen gap-4 p-4">
       <h1 className="text-3xl font-bold">Trivia 50x15</h1>
+      <div
+        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium ${
+          hasSession ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'
+        }`}
+      >
+        <span className="text-lg">{hasSession ? '✅' : '⚠️'}</span>
+        <span>
+          {hasSession
+            ? 'Sesión verificada con World ID'
+            : 'Sesión no verificada. Por favor, realiza Verify.'}
+        </span>
+      </div>
       <div className="flex flex-col gap-3 w-full max-w-md">
         <button
           onClick={() => router.push('/game')}
@@ -103,6 +130,14 @@ export default function Home() {
         >
           👤 Perfil
         </button>
+        {!hasSession && (
+          <button
+            onClick={verifyUser}
+            className="px-6 py-4 bg-blue-600 text-white rounded-lg text-lg font-semibold"
+          >
+            🔒 Verify con World ID
+          </button>
+        )}
       </div>
     </div>
   );
