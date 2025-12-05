@@ -91,6 +91,15 @@ const RETRY_DELAY_MS = 75;
 const LOCK_MAX_AGE_MS = 10_000; // 10 segundos
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
 
+type CachedVerification = {
+  record: WorldIdVerificationRecord;
+  expiresAt: number;
+};
+
+const worldIdCacheByNullifier = new Map<string, CachedVerification>();
+const worldIdCacheBySession = new Map<string, CachedVerification>();
+const worldIdCacheByUser = new Map<string, CachedVerification>();
+
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
 export type AuditLogEntry = {
   timestamp: string;
@@ -253,6 +262,59 @@ function purgeExpiredWorldIdVerifications(db: DatabaseShape, now: number) {
   return before - db.world_id_verifications.length;
 }
 
+function cacheWorldIdVerification(record: WorldIdVerificationRecord) {
+  const expiresAt = new Date(record.expires_at ?? Date.now() + WORLD_ID_SESSION_TTL_MS).getTime();
+  const cached: CachedVerification = { record, expiresAt };
+
+  worldIdCacheByNullifier.set(record.nullifier_hash, cached);
+  worldIdCacheBySession.set(record.session_token, cached);
+  worldIdCacheByUser.set(record.user_id, cached);
+}
+
+function getCachedWorldIdVerification(
+  map: Map<string, CachedVerification>,
+  key: string,
+  now: number
+) {
+  const cached = map.get(key);
+  if (!cached) return undefined;
+
+  if (cached.expiresAt <= now) {
+    worldIdCacheByNullifier.delete(cached.record.nullifier_hash);
+    worldIdCacheBySession.delete(cached.record.session_token);
+    worldIdCacheByUser.delete(cached.record.user_id);
+    return undefined;
+  }
+
+  return cached.record;
+}
+
+function purgeWorldIdCaches(now: number) {
+  for (const [key, cached] of worldIdCacheByNullifier.entries()) {
+    if (cached.expiresAt <= now) {
+      worldIdCacheByNullifier.delete(key);
+      worldIdCacheBySession.delete(cached.record.session_token);
+      worldIdCacheByUser.delete(cached.record.user_id);
+    }
+  }
+
+  for (const [key, cached] of worldIdCacheBySession.entries()) {
+    if (cached.expiresAt <= now) {
+      worldIdCacheBySession.delete(key);
+      worldIdCacheByNullifier.delete(cached.record.nullifier_hash);
+      worldIdCacheByUser.delete(cached.record.user_id);
+    }
+  }
+
+  for (const [key, cached] of worldIdCacheByUser.entries()) {
+    if (cached.expiresAt <= now) {
+      worldIdCacheByUser.delete(key);
+      worldIdCacheByNullifier.delete(cached.record.nullifier_hash);
+      worldIdCacheBySession.delete(cached.record.session_token);
+    }
+  }
+}
+
 async function withWorldIdCleanupSnapshot<T>(
   operation: (db: DatabaseShape, now: number) => T | Promise<T>
 ): Promise<T> {
@@ -260,6 +322,7 @@ async function withWorldIdCleanupSnapshot<T>(
     const db = await loadDb();
     const now = Date.now();
     const removed = purgeExpiredWorldIdVerifications(db, now);
+    purgeWorldIdCaches(now);
     const result = await operation(db, now);
 
     if (removed > 0) {
@@ -275,6 +338,7 @@ export async function cleanupExpiredWorldIdVerifications(): Promise<number> {
     const db = await loadDb();
     const now = Date.now();
     const removed = purgeExpiredWorldIdVerifications(db, now);
+    purgeWorldIdCaches(now);
 
     if (removed > 0) {
       await persistDb(db);
@@ -340,15 +404,27 @@ function assertUserExists(
 }
 
 export async function findWorldIdVerificationByNullifier(nullifier_hash: string) {
-  return withWorldIdCleanupSnapshot((db) =>
-    db.world_id_verifications.find((record) => record.nullifier_hash === nullifier_hash)
-  );
+  return withWorldIdCleanupSnapshot((db, now) => {
+    const cached = getCachedWorldIdVerification(worldIdCacheByNullifier, nullifier_hash, now);
+    if (cached) return cached;
+
+    const record = db.world_id_verifications.find((entry) => entry.nullifier_hash === nullifier_hash);
+    if (record) cacheWorldIdVerification(record);
+
+    return record;
+  });
 }
 
 export async function findWorldIdVerificationByUser(user_id: string) {
-  return withWorldIdCleanupSnapshot((db) =>
-    db.world_id_verifications.find((record) => record.user_id === user_id)
-  );
+  return withWorldIdCleanupSnapshot((db, now) => {
+    const cached = getCachedWorldIdVerification(worldIdCacheByUser, user_id, now);
+    if (cached) return cached;
+
+    const record = db.world_id_verifications.find((entry) => entry.user_id === user_id);
+    if (record) cacheWorldIdVerification(record);
+
+    return record;
+  });
 }
 
 export async function insertWorldIdVerification(
@@ -376,6 +452,7 @@ export async function insertWorldIdVerification(
     };
 
     db.world_id_verifications.push(created);
+    cacheWorldIdVerification(created);
     return created;
   });
 
@@ -393,9 +470,15 @@ export async function insertWorldIdVerification(
 }
 
 export async function findWorldIdVerificationBySession(session_token: string) {
-  return withWorldIdCleanupSnapshot((db) =>
-    db.world_id_verifications.find((record) => record.session_token === session_token)
-  );
+  return withWorldIdCleanupSnapshot((db, now) => {
+    const cached = getCachedWorldIdVerification(worldIdCacheBySession, session_token, now);
+    if (cached) return cached;
+
+    const record = db.world_id_verifications.find((entry) => entry.session_token === session_token);
+    if (record) cacheWorldIdVerification(record);
+
+    return record;
+  });
 }
 
 export async function createPaymentRecord(
