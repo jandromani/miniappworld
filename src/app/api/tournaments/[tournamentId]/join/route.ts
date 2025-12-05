@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import {
   addParticipantRecord,
-  appendLeaderboardEntry,
   getTournament,
-  incrementTournamentPool,
   participantExists,
+  updateTournamentPoolAndLeaderboardEntry,
   serializeTournament,
   validateTokenForTournament,
 } from '@/lib/server/tournamentData';
@@ -13,22 +12,35 @@ import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
   findWorldIdVerificationByUser,
+  isLocalStorageDisabled,
   recordAuditEvent,
 } from '@/lib/database';
-import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import {
+  isSupportedTokenAddress,
+  isSupportedTokenSymbol,
+  normalizeTokenIdentifier,
+} from '@/lib/tokenNormalization';
 import { rateLimit } from '@/lib/rateLimit';
 import { sendNotification } from '@/lib/notificationService';
 
 const SESSION_COOKIE = 'session_token';
 
-export async function POST(req: NextRequest, { params }: { params: { tournamentId: string } }) {
+type JoinParams = { tournamentId?: string; id?: string };
+
+export async function POST(req: NextRequest, { params }: { params: JoinParams }) {
   const rateKey = req.headers.get('x-real-ip') ?? req.headers.get('x-forwarded-for') ?? 'global';
-  const rate = rateLimit(rateKey);
+  const rate = await rateLimit(rateKey);
   if (!rate.allowed) {
     return NextResponse.json({ error: 'Límite de solicitudes alcanzado' }, { status: 429 });
   }
 
-  const tournament = await getTournament(params.tournamentId);
+  const tournamentId = params.tournamentId ?? params.id;
+
+  if (!tournamentId) {
+    return NextResponse.json({ error: 'Torneo no especificado' }, { status: 400 });
+  }
+
+  const tournament = await getTournament(tournamentId);
 
   if (!tournament) {
     return NextResponse.json({ error: 'Torneo no encontrado' }, { status: 404 });
@@ -41,20 +53,16 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     await recordAuditEvent({
       action: 'join_tournament',
       entity: 'tournaments',
-      entityId: params.tournamentId,
+      entityId: tournamentId,
       status: 'error',
       details: { reason: 'missing_session_token', paymentReference },
     });
-    return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
-  }
-
-  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
 
   if (!sessionIdentity) {
     await recordAuditEvent({
       action: 'join_tournament',
       entity: 'tournaments',
-      entityId: params.tournamentId,
+      entityId: tournamentId,
       sessionId: sessionToken,
       status: 'error',
       details: { reason: 'session_not_found', paymentReference },
@@ -78,6 +86,11 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     return NextResponse.json({ error: 'Token, monto y referencia de pago son obligatorios' }, { status: 400 });
   }
 
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return NextResponse.json({ error: 'El monto debe ser un número positivo' }, { status: 400 });
+  }
+
   if (tournament.status !== 'upcoming') {
     return NextResponse.json({ error: 'El torneo ya inició o finalizó' }, { status: 400 });
   }
@@ -90,9 +103,8 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     return NextResponse.json({ error: 'El usuario ya está inscrito en este torneo' }, { status: 400 });
   }
 
-  const payment = await findPaymentByReference(paymentReference);
-  if (!payment) {
-    return NextResponse.json({ error: 'Pago no encontrado' }, { status: 404 });
+    console.error('[join_tournament] Error inesperado', error);
+    return NextResponse.json({ error: 'Error interno al procesar la inscripción' }, { status: 500 });
   }
 
   if (payment.status !== 'confirmed') {
@@ -118,12 +130,22 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
   const paymentWallet = payment.wallet_address?.toLowerCase();
   const verifiedWallet = worldId.wallet_address?.toLowerCase();
 
+  if (paymentWallet && !verifiedWallet) {
+    return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
+  }
+
   if (paymentWallet && verifiedWallet && paymentWallet !== verifiedWallet) {
     return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
   }
 
   if (paymentWallet && walletAddress && paymentWallet !== walletAddress.toLowerCase()) {
     return NextResponse.json({ error: 'La wallet proporcionada no coincide con el pago' }, { status: 403 });
+  }
+
+  if (walletAddress && verifiedWallet && walletAddress.toLowerCase() !== verifiedWallet) {
+    return NextResponse.json({ error: 'La wallet proporcionada no coincide con la verificada' }, { status: 403 });
+  if (typeof token !== 'string' || (!isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token))) {
+    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
   }
 
   const normalizedToken = normalizeTokenIdentifier(token);
@@ -137,9 +159,22 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     return NextResponse.json({ error: validation.message }, { status: 400 });
   }
 
-  await addParticipantRecord(tournament.tournamentId, userId, paymentReference);
+  const refreshedTournament = await getTournament(tournament.tournamentId);
 
-  const updatedTournament = await incrementTournamentPool(tournament);
+  if (!refreshedTournament) {
+    return NextResponse.json({ error: 'Torneo no encontrado' }, { status: 404 });
+  }
+
+  if (refreshedTournament.currentPlayers >= refreshedTournament.maxPlayers) {
+    return NextResponse.json({ error: 'No hay cupos disponibles' }, { status: 400 });
+  }
+
+  await addParticipantRecord(tournament.tournamentId, userId, paymentReference);
+  const participantWallet = walletAddress ?? worldId.wallet_address ?? payment.wallet_address;
+
+  await addParticipantRecord(tournament.tournamentId, userId, paymentReference, participantWallet);
+
+  const updatedTournament = (await getTournament(tournament.tournamentId)) ?? tournament;
   await appendLeaderboardEntry(tournament.tournamentId, {
     userId,
     username: username ?? 'Nuevo jugador',

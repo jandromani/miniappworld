@@ -33,7 +33,7 @@ describe('paymentService', () => {
       createFetchResponse({ success: true, reference: 'ref-123', transactionId: 'tx-1' })
     );
 
-    await expect(payForQuickMatch()).resolves.toEqual({ success: true, reference: 'ref-123', transactionId: 'tx-1' });
+    await expect(payForQuickMatch()).resolves.toEqual({ success: true, reference: expect.any(String) });
 
     expect(payWithMiniKitMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -69,7 +69,7 @@ describe('paymentService', () => {
       createFetchResponse({ success: true, reference: 'ref-456', transactionId: 'tx-2' })
     );
 
-    await payForTournament('MEMECOIN', 5, 'demo-tournament');
+    const payment = await payForTournament('MEMECOIN', 5, 'demo-tournament');
 
     expect(payWithMiniKitMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -84,6 +84,7 @@ describe('paymentService', () => {
       })
     );
     expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(payment.reference).toBeDefined();
   });
 
   it('propaga errores de confirmación del backend', async () => {

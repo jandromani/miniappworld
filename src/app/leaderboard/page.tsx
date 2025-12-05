@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from 'react';
 
+import { sanitizeText } from '@/lib/sanitize';
+
 type GlobalLeaderboardEntry = {
   rank: number;
   username: string;
   totalPoints: number;
   tournamentsWon: number;
-  totalEarnings: { token: 'WLD' | 'USDC'; amount: string };
+  totalEarnings: { token: string; amount: string }[];
   isCurrentUser?: boolean;
 };
 
@@ -17,14 +19,16 @@ export default function LeaderboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const load = async () => {
+    let eventSource: EventSource | null = null;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const fetchSnapshot = async () => {
       try {
         const response = await fetch('/api/leaderboard/global', { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error('No se pudo cargar el leaderboard');
-        }
+        if (!response.ok) throw new Error('No se pudo cargar el leaderboard');
         const data = (await response.json()) as GlobalLeaderboardEntry[];
         setEntries(data);
+        setError(null);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Error inesperado al cargar leaderboard';
         setError(message);
@@ -33,7 +37,32 @@ export default function LeaderboardPage() {
       }
     };
 
-    load();
+    const connectSse = () => {
+      eventSource?.close();
+      eventSource = new EventSource('/api/leaderboard/global/stream');
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data) as GlobalLeaderboardEntry[];
+        setEntries(data);
+        setError(null);
+        setLoading(false);
+      };
+
+      eventSource.onerror = () => {
+        setError('Conexión en vivo interrumpida, reintentando...');
+        eventSource?.close();
+        if (retryTimeout) clearTimeout(retryTimeout);
+        retryTimeout = setTimeout(connectSse, 4000);
+      };
+    };
+
+    fetchSnapshot();
+    connectSse();
+
+    return () => {
+      eventSource?.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
   }, []);
 
   return (
@@ -74,11 +103,13 @@ export default function LeaderboardPage() {
                   className={`border-t ${entry.isCurrentUser ? 'bg-blue-50 font-semibold' : ''}`}
                 >
                   <td className="px-4 py-3">{entry.rank}</td>
-                  <td className="px-4 py-3">{entry.username}</td>
+                  <td className="px-4 py-3">{sanitizeText(entry.username) || 'Usuario'}</td>
                   <td className="px-4 py-3">{entry.totalPoints}</td>
                   <td className="px-4 py-3">{entry.tournamentsWon}</td>
                   <td className="px-4 py-3">
-                    {entry.totalEarnings.amount} {entry.totalEarnings.token}
+                    {entry.totalEarnings.length
+                      ? entry.totalEarnings.map((earning) => `${earning.amount} ${earning.token}`).join(' / ')
+                      : '—'}
                   </td>
                 </tr>
               ))}

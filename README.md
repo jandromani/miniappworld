@@ -7,6 +7,8 @@ comodines, endpoints de pagos y contrato de torneos en World Chain.
 ## Requisitos
 - Node.js 18+
 - Variables de entorno definidas en `.env` (ver `.env.example`).
+  - Define `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` para habilitar rate limiting distribuido entre réplicas. Si no están
+    presentes se usa un bucket en memoria (solo recomendado para desarrollo local).
 
 ## Scripts
 ```bash
@@ -15,6 +17,14 @@ npm run dev
 npm run build
 npm run start
 ```
+
+## Auditoría y rotación de logs
+- El archivo `data/audit.log` rota automáticamente cuando cambia el día o al alcanzar el tamaño configurado (5 MB por defecto, puedes ajustar con `AUDIT_LOG_MAX_SIZE_BYTES`).
+- Desactiva la rotación diaria con `AUDIT_LOG_ROTATE_DAILY=false` si solo quieres rotar por tamaño.
+- Reenvío opcional a servicios externos:
+  - `AUDIT_LOG_HTTP_ENDPOINT` (+ `AUDIT_LOG_HTTP_AUTHORIZATION`): envía cada entrada como `POST` JSON, pensado para ingestas HTTP (ELK, webhooks).
+  - `AUDIT_LOG_CLOUDWATCH_GROUP` y `AUDIT_LOG_CLOUDWATCH_STREAM` (+ `AWS_REGION`): publica las entradas en CloudWatch Logs, creando el grupo/stream si no existen.
+- Controla el timeout del reenvío con `AUDIT_LOG_FORWARD_TIMEOUT_MS` (4s por defecto).
 
 ## Configuración de MiniKit
 Define en `.env`:
@@ -30,9 +40,21 @@ World ID y `sendHapticFeedback` para feedback táctil.
 - `app/api/initiate-payment`: Genera payload para comando `pay`.
 - `app/api/confirm-payment`: Confirma y registra hashes de pago.
 - `app/api/send-notification`: Simula el envío de notificaciones a ganadores.
+  - Usa un archivo duradero `data/notification-keys.json` para mantener una lista de claves y roles activos.
+  - Ejemplo: `{ "keys": [{ "key": "api-key-1", "role": "ops" }, { "key": "api-key-2", "role": "marketing", "revoked": false }] }`.
+  - También escribe auditorías en `data/notification-audit.log` (un registro por línea en formato JSON).
 - `app/api/tournaments/create`: Valida (mock) la creación de torneos y whitelist de tokens.
 - `contracts/TournamentManager.sol`: Contrato principal para registrar torneos, manejar buy-ins y distribuir premios usando ERC-20.
 - `contracts/TournamentPool.sol`: Contrato simple para pools de torneos (ejemplo legacy).
+
+### API keys para `/api/send-notification`
+- Usa `NOTIFICATIONS_API_KEYS` como un JSON string con múltiples claves y expiraciones opcionales, por ejemplo:
+  ```bash
+  NOTIFICATIONS_API_KEYS='[{"key":"clave-actual","expiresAt":"2025-01-01T00:00:00Z"},{"key":"clave-anterior"}]'
+  ```
+- Como fallback, puedes definir `NOTIFICATIONS_API_KEY` con una sola clave.
+- El formato se valida al arrancar la aplicación; si es inválido se lanzará un error temprano.
+La capa de persistencia vive en `src/lib/database.ts`, que centraliza pagos, torneos y auditorías. El store antiguo de pagos fue retirado para evitar caminos de importación duplicados.
 
 ## Páginas
 - `/`: Overview del proyecto y fases.

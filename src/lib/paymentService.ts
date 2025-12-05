@@ -62,8 +62,17 @@ async function initiatePayment(body: InitiatePaymentPayload) {
   });
 
   if (!response.ok) {
-    throw new Error('Error al iniciar pago');
+    let message = 'Error al iniciar pago';
+    try {
+      const result = await response.json();
+      message = result?.message ?? message;
+    } catch (error) {
+      console.error('No se pudo parsear error de initiate-payment', error);
+    }
+    throw new Error(message);
   }
+
+  return response.json();
 }
 
 function handlePayError(finalPayload: MiniAppPaymentErrorPayload): never {
@@ -80,7 +89,7 @@ type ConfirmPaymentResult = {
 async function confirmPayment(
   payload: MiniAppPaymentSuccessPayload,
   reference: string
-): Promise<ConfirmPaymentResult> {
+): Promise<{ success: boolean; message?: string; reference: string }> {
   const response = await fetch('/api/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -88,13 +97,18 @@ async function confirmPayment(
     body: JSON.stringify({ payload, reference }),
   });
 
-  const result = (await response.json()) as ConfirmPaymentResult & { message?: string };
+  let result: { success: boolean; message?: string } | null = null;
+  try {
+    result = await response.json();
+  } catch (error) {
+    console.error('No se pudo parsear respuesta de confirm-payment', error);
+  }
 
-  if (!response.ok || !result.success) {
+  if (!response.ok || !result?.success) {
     throw new Error(result?.message ?? 'Pago no verificado');
   }
 
-  return { ...result, reference: result.reference ?? reference };
+  return { ...result, reference };
 }
 
 async function executePayCommand({
