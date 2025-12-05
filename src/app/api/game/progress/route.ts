@@ -23,18 +23,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
   }
 
-  const identity = await findWorldIdVerificationBySession(sessionToken);
-  if (!identity) {
-    await recordAuditEvent({
-      action: 'sync_game_progress',
-      entity: 'game_progress',
-      entityId: sessionId,
-      sessionId: sessionToken,
-      status: 'error',
-      details: { reason: 'session_not_found' },
-    });
-    return NextResponse.json({ error: 'La sesión expiró o no existe' }, { status: 401 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
+
+  const { identity, sessionToken } = sessionResult;
 
   const normalizedMode = mode === 'tournament' ? 'tournament' : 'quick';
   if (normalizedMode === 'tournament' && !tournamentId) {

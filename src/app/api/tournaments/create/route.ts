@@ -8,9 +8,9 @@ import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateUserText } from '@/lib/validation';
 
 const SUPPORTED_ADDRESSES = [
-  WLD_ADDRESS.toLowerCase(),
-  USDC_ADDRESS.toLowerCase(),
-  MEMECOIN_CONFIG.address.toLowerCase(),
+  normalizeTokenIdentifier(WLD_ADDRESS),
+  normalizeTokenIdentifier(USDC_ADDRESS),
+  normalizeTokenIdentifier(MEMECOIN_CONFIG.address),
 ];
 
 const SESSION_COOKIE = 'session_token';
@@ -81,12 +81,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  let lowerBuyIn: string;
+  let normalizedBuyIn: string;
   let normalizedAccepted: string[];
 
   try {
-    lowerBuyIn = normalizeTokenIdentifier(String(buyInToken));
-    normalizedAccepted = (acceptedTokens ?? [buyInToken]).map((token: string) => normalizeTokenIdentifier(token));
+    normalizedBuyIn = normalizeTokenIdentifier(String(buyInToken));
+    normalizedAccepted = (acceptedTokens ?? [buyInToken]).map((token: string) =>
+      normalizeTokenIdentifier(String(token))
+    );
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 400 });
   }
@@ -157,7 +159,7 @@ export async function POST(req: NextRequest) {
   const parsedStart = new Date(startTime);
   const parsedEnd = new Date(endTime);
 
-  if (isNaN(parsedStart.getTime()) || isNaN(parsedEnd.getTime())) {
+  if (Number.isNaN(parsedStart.getTime()) || Number.isNaN(parsedEnd.getTime())) {
     return NextResponse.json({ error: 'Las fechas de inicio y fin son inválidas' }, { status: 400 });
   }
 
@@ -199,7 +201,7 @@ export async function POST(req: NextRequest) {
     sessionId: sessionToken,
     status: 'success',
     details: {
-      buyInToken: lowerBuyIn,
+      buyInToken: normalizedBuyIn,
       buyInAmount: normalizedBuyInAmount.toString(),
       startTime: parsedStart.toISOString(),
       endTime: parsedEnd.toISOString(),

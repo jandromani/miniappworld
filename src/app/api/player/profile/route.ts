@@ -14,14 +14,11 @@ export async function PATCH(req: NextRequest) {
 
   const session = req.cookies.get(SESSION_COOKIE);
 
-  if (!session) {
-    return NextResponse.json({ error: 'Usuario no verificado' }, { status: 401 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
 
-  const identity = await findWorldIdVerificationBySession(session.value);
-  if (!identity) {
-    return NextResponse.json({ error: 'Sesión expirada o inválida' }, { status: 401 });
-  }
+  const { identity } = sessionResult;
 
   const body = await req.json();
   const { alias, avatarUrl } = body as { alias?: string; avatarUrl?: string };

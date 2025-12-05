@@ -3,7 +3,6 @@ import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import {
   createPaymentRecord,
   findPaymentByReference,
-  findWorldIdVerificationBySession,
   isLocalStorageDisabled,
   recordAuditEvent,
   updateWorldIdWallet,
@@ -14,7 +13,6 @@ import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { recordApiFailureMetric } from '@/lib/metrics';
 
-const SESSION_COOKIE = 'session_token';
 const PATH = 'initiate-payment';
 
 export async function POST(req: NextRequest) {
@@ -57,9 +55,8 @@ export async function POST(req: NextRequest) {
         action: 'initiate_payment',
         entity: 'payments',
         entityId: reference,
-        sessionId: undefined,
         status: 'error',
-        details: { reason: 'missing_session_token' },
+        details: { reason: originCheck.reason },
       });
       return apiErrorResponse('SESSION_REQUIRED', {
         message: 'Sesión no verificada. Realiza la verificación de World ID.',
@@ -67,7 +64,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+    const sessionResult = await requireActiveSession(req, {
+      path: PATH,
+      audit: { action: 'initiate_payment', entity: 'payments', entityId: reference },
+    });
 
     if (!sessionIdentity) {
       await recordAuditEvent({
@@ -139,8 +139,8 @@ export async function POST(req: NextRequest) {
 
     if (
       walletAddress &&
-      sessionIdentity.wallet_address &&
-      walletAddress.toLowerCase() !== sessionIdentity.wallet_address.toLowerCase()
+      identity.wallet_address &&
+      walletAddress.toLowerCase() !== identity.wallet_address.toLowerCase()
     ) {
       return apiErrorResponse('FORBIDDEN', {
         message: 'La wallet enviada no coincide con la sesión verificada',

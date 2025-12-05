@@ -48,10 +48,17 @@ npm run start
 - Todas las entradas de auditoría y logs de API se pseudonimizan (hash SHA-256 con `LOG_HASH_SECRET`) para evitar exponer IDs de usuario, wallets, tokens o referencias sensibles.
 - Puedes cifrar en reposo el archivo `data/database.json` habilitando `DATA_ENCRYPTION_KEY` (AES-256-GCM). Si usas un backend gestionado, considera migrar el almacenamiento local a una base de datos segura (PostgreSQL/Redis) y mantener `DISABLE_LOCAL_STATE=true` para evitar escribir a disco.
 
+## Migración a bases de datos transaccionales
+
+- El almacenamiento local con journaling y watchdog de locks está pensado para entornos de desarrollo o despliegues pequeños. Para producción, evalúa migrar a una base transaccional (PostgreSQL/Redis) que gestione concurrencia y durabilidad.
+- Configura `DB_DIALECT=postgres` o `DB_DIALECT=redis` junto con tus credenciales para preparar la transición; el código usa esta señal para ajustar niveles de aislamiento y tiempos de espera.
+- Cuando delegues el estado a una base gestionada, define `DISABLE_LOCAL_STATE=true` para evitar escrituras en disco y asegurar compatibilidad con réplicas sin almacenamiento local. Mantén `STATE_DIRECTORY` apuntando a un volumen efímero solo si necesitas un respaldo puntual en el entorno actual.
+
 ## Configuración de MiniKit
 Define en `.env`:
 - `APP_ID` y `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
 - `DEV_PORTAL_API_KEY` y `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
+- `NEXT_PUBLIC_ACTION`: Action ID de World ID (ej. `trivia_game_access`).
 - `NEXT_PUBLIC_TREASURY_ADDRESS`: Address que recibe buy-ins.
 - `NEXT_PUBLIC_RECEIVER_ADDRESS`: Address que recibe pagos simulados en el backend.
 - `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`: Claves para autenticar `/api/send-notification`.
@@ -59,6 +66,49 @@ Define en `.env`:
 El proveedor de MiniKit se inicializa en `app/providers.tsx` y ejecuta `walletAuth` al
 montar la app. En la pantalla de juego (`/game`) puedes lanzar `verify` para validar
 World ID y `sendHapticFeedback` para feedback táctil.
+
+### Consola móvil (Eruda)
+- Activa el flag `NEXT_PUBLIC_ENABLE_ERUDA=true` para cargar la consola móvil (se
+  inicializa en `src/components/DevConsoleLoader.tsx`).
+- Úsala para inspeccionar logs y red dentro de World App cuando hagas pruebas
+  manuales.
+
+## Guía de pruebas end-to-end (Developer Portal + World App)
+
+### Configuración inicial
+- 🛠️ Developer Portal: crea la app "Trivia 50x15" (Games) y copia `APP_ID`,
+  `DEV_PORTAL_API_KEY` y `NEXT_PUBLIC_ACTION=trivia_game_access` en `.env.local`.
+- 🛠️ World ID: registra la action `trivia_game_access` en la sección World ID y
+  usa el mismo valor en `NEXT_PUBLIC_ACTION` para que el backend valide la acción.
+- 🛠️ URL pública: levanta `pnpm dev`/`npm run dev` en localhost:3000, expón con
+  `ngrok http 3000` y pega la URL en Developer Portal → Settings → App URL.
+- ✅ Validaciones en runtime: el backend exige `NEXT_PUBLIC_ACTION`, IDs de app,
+  API keys y receiver/treasury para evitar pruebas con configuración incompleta.
+
+### Pasos previos a probar en móvil
+- 🛠️ Fondos de testnet: solicita WLD en el faucet de World Chain Sepolia antes de
+  probar los pagos.
+- 🛠️ QR de test: genera el QR en la página de testing del portal con tu `APP_ID`
+  y escanéalo desde World App.
+
+### Casos críticos a validar
+- Verify + Pay + juego: en `/` pulsa "Verificar con World ID" (usa el Worldcoin
+  Simulator si es testnet), luego "Partida Rápida" y confirma el pago de 1 WLD.
+- Pagos fallidos: cancela el flujo de Pay o prueba con saldo insuficiente; la UI
+  debe mostrar el error devuelto por MiniKit.
+- Torneos: inscríbete desde `/tournament`, confirma el buy-in, juega y verifica que
+  el score aparece en `/leaderboard`. El endpoint `/api/send-notification` permite
+  simular el push al ganador.
+- Notificaciones programadas: configura tu cron/worker externo para llamar al
+  endpoint de notificaciones antes de iniciar/finalizar torneos (ver guía de
+  mensajes en los pasos del usuario).
+
+### Observabilidad y debugging
+- ✅ Eruda opcional vía `NEXT_PUBLIC_ENABLE_ERUDA`.
+- ✅ Logs/auditoría persistentes en `data/` con rotación y hash de PII.
+- 🛠️ Worldscan/Developer API: usa `transaction_id` en
+  `https://developer.worldcoin.org/api/v2/minikit/transaction/{id}` para confirmar
+  pagos desde tu wallet de testnet.
 
 ## Endpoints y contratos
 - `app/api/initiate-payment`: Genera payload para comando `pay`.

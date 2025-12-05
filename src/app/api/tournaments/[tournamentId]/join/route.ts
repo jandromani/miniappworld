@@ -5,13 +5,11 @@ import {
   getTournament,
   participantExists,
   serializeTournament,
-  validateTokenForTournament,
 } from '@/lib/server/tournamentData';
 import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
   findWorldIdVerificationByUser,
-  isLocalStorageDisabled,
   recordAuditEvent,
 } from '@/lib/database';
 import { isSupportedTokenAddress, isSupportedTokenSymbol, normalizeTokenIdentifier } from '@/lib/tokenNormalization';
@@ -19,8 +17,9 @@ import { rateLimit } from '@/lib/rateLimit';
 import { sendNotification } from '@/lib/notificationService';
 import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { sanitizeUserText } from '@/lib/validation';
+import { requireActiveSession } from '@/lib/sessionValidation';
 
-const SESSION_COOKIE = 'session_token';
+const PATH = 'join_tournament';
 
 type JoinParams = { tournamentId?: string; id?: string };
 
@@ -76,22 +75,19 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
       action: 'join_tournament',
       entity: 'tournaments',
       entityId: tournamentId,
-      sessionId: sessionToken,
-      status: 'error',
-      details: { reason: 'session_not_found', paymentReference },
-    });
-    return NextResponse.json({ error: 'La sesión no es válida o expiró' }, { status: 401 });
-  }
+      details: { paymentReference },
+    },
+  });
 
-  if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
-    return NextResponse.json({ error: 'El usuario no coincide con la sesión activa' }, { status: 403 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
 
   const userId = sessionIdentity.user_id;
   const worldId = await findWorldIdVerificationByUser(userId);
 
-  if (!worldId) {
-    return NextResponse.json({ error: 'World ID no verificado para este usuario' }, { status: 403 });
+  if (bodyUserId && bodyUserId !== identity.user_id) {
+    return NextResponse.json({ error: 'El usuario no coincide con la sesión activa' }, { status: 403 });
   }
 
   if (!token || amount === undefined || !paymentReference) {
@@ -106,7 +102,7 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'No hay cupos disponibles' }, { status: 400 });
   }
 
-  if (await participantExists(tournament.tournamentId, userId)) {
+  if (await participantExists(tournament.tournamentId, identity.user_id)) {
     return NextResponse.json({ error: 'El usuario ya está inscrito en este torneo' }, { status: 400 });
   }
 
@@ -135,6 +131,10 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'Referencia de pago no encontrada' }, { status: 404 });
   }
 
+  if (!payment) {
+    return NextResponse.json({ error: 'Pago no encontrado' }, { status: 404 });
+  }
+
   if (payment.status !== 'confirmed') {
     return NextResponse.json({ error: 'El pago no está confirmado aún' }, { status: 400 });
   }
@@ -147,11 +147,11 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'La referencia de pago no pertenece a esta sesión' }, { status: 403 });
   }
 
-  if (payment.user_id && payment.user_id !== worldId.user_id) {
+  if (payment.user_id && payment.user_id !== identity.user_id) {
     return NextResponse.json({ error: 'El pago pertenece a otro usuario' }, { status: 403 });
   }
 
-  if (payment.nullifier_hash && payment.nullifier_hash !== worldId.nullifier_hash) {
+  if (payment.nullifier_hash && payment.nullifier_hash !== identity.nullifier_hash) {
     return NextResponse.json({ error: 'La verificación de identidad no coincide con el pago' }, { status: 403 });
   }
 
@@ -189,7 +189,13 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
       message: 'Te has unido al torneo correctamente',
       miniAppPath: `/tournament/${tournament.tournamentId}`,
     });
-  }
+  } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json(
+        { error: 'Persistencia local deshabilitada. Configure un directorio compartido o servicio de storage.' },
+        { status: 503 }
+      );
+    }
 
   return NextResponse.json({
     success: true,
