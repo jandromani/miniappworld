@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { NextResponse } from 'next/server';
 
 export type ApiLogLevel = 'info' | 'warn' | 'error';
@@ -27,6 +28,8 @@ export type ApiErrorCode =
   | 'TOURNAMENT_MISMATCH'
   | 'IDENTITY_MISMATCH'
   | 'INTERNAL_ERROR';
+
+const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET ?? 'log_salt';
 
 const ERROR_DEFINITIONS: Record<
   ApiErrorCode,
@@ -58,6 +61,48 @@ const ERROR_DEFINITIONS: Record<
   INTERNAL_ERROR: { status: 500, defaultMessage: 'Error interno del servidor', level: 'error' },
 };
 
+function hashValue(value: unknown) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  return `hash:${createHash('sha256').update(LOG_HASH_SECRET + serialized).digest('hex')}`;
+}
+
+function shouldAnonymizeKey(key: string) {
+  const normalized = key.toLowerCase();
+  return (
+    normalized.includes('wallet') ||
+    normalized.includes('user') ||
+    normalized.includes('session') ||
+    normalized.includes('token') ||
+    normalized.includes('address') ||
+    normalized.includes('reference') ||
+    normalized.includes('nullifier') ||
+    normalized.includes('transaction')
+  );
+}
+
+function sanitizeValue(value: unknown, key?: string): unknown {
+  if (value === null || value === undefined) return value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeValue(item, key));
+  }
+
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([nestedKey, nestedValue]) => [
+        nestedKey,
+        sanitizeValue(nestedValue, nestedKey),
+      ])
+    );
+  }
+
+  if (key && shouldAnonymizeKey(key)) {
+    return hashValue(value);
+  }
+
+  return value;
+}
+
 function logStructured(level: ApiLogLevel, event: Record<string, unknown>) {
   const payload = {
     timestamp: new Date().toISOString(),
@@ -65,7 +110,7 @@ function logStructured(level: ApiLogLevel, event: Record<string, unknown>) {
     ...event,
   };
 
-  const serialized = JSON.stringify(payload);
+  const serialized = JSON.stringify(sanitizeValue(payload));
 
   switch (level) {
     case 'info':

@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, scryptSync } from 'crypto';
 import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import { normalizeTokenIdentifier } from './tokenNormalization';
@@ -114,9 +114,7 @@ const DATA_ROOT = process.env.STATE_DIRECTORY ?? path.join(process.cwd(), 'data'
 const DB_PATH = path.join(DATA_ROOT, 'database.json');
 const LOCK_PATH = path.join(DATA_ROOT, 'database.lock');
 const AUDIT_LOG_PATH = path.join(DATA_ROOT, 'audit.log');
-const DB_PATH = path.join(process.cwd(), 'data', 'database.json');
-const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
-const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
+const AUDIT_LOG_RETENTION_DAYS = Number(process.env.AUDIT_LOG_RETENTION_DAYS ?? 30);
 const AUDIT_LOG_MAX_SIZE_BYTES = Number(process.env.AUDIT_LOG_MAX_SIZE_BYTES ?? 5 * 1024 * 1024);
 const AUDIT_LOG_ROTATE_DAILY = process.env.AUDIT_LOG_ROTATE_DAILY !== 'false';
 const AUDIT_LOG_HTTP_ENDPOINT = process.env.AUDIT_LOG_HTTP_ENDPOINT;
@@ -124,10 +122,127 @@ const AUDIT_LOG_HTTP_AUTHORIZATION = process.env.AUDIT_LOG_HTTP_AUTHORIZATION;
 const AUDIT_LOG_FORWARD_TIMEOUT_MS = Number(process.env.AUDIT_LOG_FORWARD_TIMEOUT_MS ?? 4000);
 const AUDIT_LOG_CLOUDWATCH_GROUP = process.env.AUDIT_LOG_CLOUDWATCH_GROUP;
 const AUDIT_LOG_CLOUDWATCH_STREAM = process.env.AUDIT_LOG_CLOUDWATCH_STREAM ?? 'miniapp-audit';
+const DATA_ENCRYPTION_KEY = process.env.DATA_ENCRYPTION_KEY;
+const LOG_HASH_SECRET = process.env.LOG_HASH_SECRET ?? 'log_salt';
 const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
 const LOCK_MAX_AGE_MS = 10_000; // 10 segundos
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
+
+function hashSensitiveValue(value: unknown) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  return `hash:${createHash('sha256').update(LOG_HASH_SECRET + serialized).digest('hex')}`;
+}
+
+function shouldAnonymizeKey(key: string) {
+  const normalized = key.toLowerCase();
+  return (
+    normalized.includes('wallet') ||
+    normalized.includes('session') ||
+    normalized.includes('user') ||
+    normalized.includes('token') ||
+    normalized.includes('address') ||
+    normalized.includes('reference') ||
+    normalized.includes('nullifier') ||
+    normalized.includes('transaction') ||
+    normalized.includes('recipient')
+  );
+}
+
+function anonymizeValue(value: unknown, key?: string): unknown {
+  if (value === null || value === undefined) return value;
+
+  if (Array.isArray(value)) {
+    return value.map((item) => anonymizeValue(item, key));
+  }
+
+  if (typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([nestedKey, nestedValue]) => [
+        nestedKey,
+        anonymizeValue(nestedValue, nestedKey),
+      ])
+    );
+  }
+
+  if (key && shouldAnonymizeKey(key)) {
+    return hashSensitiveValue(value);
+  }
+
+  return value;
+}
+
+function sanitizeAuditLogEntry(entry: AuditLogEntry): AuditLogEntry {
+  return {
+    ...entry,
+    userId: entry.userId ? hashSensitiveValue(entry.userId) : undefined,
+    sessionId: entry.sessionId ? hashSensitiveValue(entry.sessionId) : undefined,
+    entityId: entry.entityId ? hashSensitiveValue(entry.entityId) : undefined,
+    details: entry.details ? (anonymizeValue(entry.details) as Record<string, unknown>) : undefined,
+  };
+}
+
+function getEncryptionKey() {
+  if (!DATA_ENCRYPTION_KEY) return undefined;
+  return scryptSync(DATA_ENCRYPTION_KEY, 'miniappworld-state', 32);
+}
+
+function encryptContent(plainText: string) {
+  const key = getEncryptionKey();
+  if (!key) return plainText;
+
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  return JSON.stringify(
+    {
+      __encrypted: true,
+      iv: iv.toString('base64'),
+      authTag: authTag.toString('base64'),
+      ciphertext: encrypted.toString('base64'),
+    },
+    null,
+    2
+  );
+}
+
+function decryptContent(raw: string) {
+  const key = getEncryptionKey();
+  if (!key) return raw;
+
+  let parsed: { __encrypted?: boolean; iv: string; authTag: string; ciphertext: string } | undefined;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error('No se pudo descifrar la base de datos: formato inválido');
+  }
+
+  if (!parsed.__encrypted) {
+    return raw;
+  }
+
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(parsed.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(parsed.authTag, 'base64'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(parsed.ciphertext, 'base64')),
+    decipher.final(),
+  ]);
+
+  return decrypted.toString('utf8');
+}
+
+function serializeDb(db: DatabaseShape) {
+  const content = JSON.stringify(db, null, 2);
+  return encryptContent(content);
+}
+
+function deserializeDb(content: string): Partial<DatabaseShape> {
+  const decrypted = decryptContent(content);
+  return JSON.parse(decrypted) as Partial<DatabaseShape>;
+}
 
 function assertPersistentStorageAvailable() {
   if (process.env.DISABLE_LOCAL_STATE === 'true') {
@@ -286,6 +401,45 @@ async function rotateAuditLogIfNeeded() {
   }
 }
 
+async function purgeOldAuditLogs() {
+  if (!Number.isFinite(AUDIT_LOG_RETENTION_DAYS) || AUDIT_LOG_RETENTION_DAYS <= 0) {
+    return;
+  }
+
+  const directory = path.dirname(AUDIT_LOG_PATH);
+  const baseName = path.basename(AUDIT_LOG_PATH, '.log');
+  const maxAge = AUDIT_LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+
+  try {
+    const files = await fs.readdir(directory);
+    await Promise.all(
+      files
+        .filter((file) => file.startsWith(baseName) && file.endsWith('.log'))
+        .map(async (file) => {
+          const fullPath = path.join(directory, file);
+
+          if (fullPath === AUDIT_LOG_PATH) return;
+
+          try {
+            const stats = await fs.stat(fullPath);
+            if (now - stats.mtimeMs > maxAge) {
+              await fs.unlink(fullPath);
+            }
+          } catch (statError) {
+            if ((statError as NodeJS.ErrnoException).code !== 'ENOENT') {
+              console.error('[database] No se pudo evaluar retención de auditoría', statError);
+            }
+          }
+        })
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('[database] No se pudo aplicar retención de auditoría', error);
+    }
+  }
+}
+
 async function forwardAuditLogToHttp(entry: AuditLogEntry) {
   if (!AUDIT_LOG_HTTP_ENDPOINT) return;
 
@@ -388,12 +542,14 @@ async function forwardAuditLog(entry: AuditLogEntry) {
 async function appendAuditLog(entry: AuditLogEntry) {
   assertPersistentStorageAvailable();
 
-  const line = `${JSON.stringify(entry)}\n`;
+  const sanitizedEntry = sanitizeAuditLogEntry(entry);
+  const line = `${JSON.stringify(sanitizedEntry)}\n`;
   try {
     await fs.mkdir(path.dirname(AUDIT_LOG_PATH), { recursive: true });
     await rotateAuditLogIfNeeded();
+    await purgeOldAuditLogs();
     await withRetries(() => fs.appendFile(AUDIT_LOG_PATH, line, 'utf8'));
-    await forwardAuditLog(entry);
+    await forwardAuditLog(sanitizedEntry);
   } catch (error) {
     console.error('[database] No se pudo registrar auditoría', error);
   }
@@ -421,7 +577,7 @@ async function ensureDbFile(): Promise<void> {
         tournament_payouts: [],
         game_progress: [],
       };
-      await fs.writeFile(DB_PATH, JSON.stringify(emptyDb, null, 2), 'utf8');
+      await fs.writeFile(DB_PATH, serializeDb(emptyDb), 'utf8');
     } else {
       throw error;
     }
@@ -433,7 +589,7 @@ async function loadDb(): Promise<DatabaseShape> {
 
   await ensureDbFile();
   const content = await withRetries(() => fs.readFile(DB_PATH, 'utf8'));
-  const parsed = JSON.parse(content) as Partial<DatabaseShape>;
+  const parsed = deserializeDb(content);
   return {
     world_id_verifications: parsed.world_id_verifications ?? [],
     payments: parsed.payments ?? [],
@@ -451,7 +607,7 @@ async function persistDb(db: DatabaseShape): Promise<void> {
   const tempPath = `${DB_PATH}.tmp`;
 
   await withRetries(async () => {
-    await fs.writeFile(tempPath, JSON.stringify(db, null, 2), 'utf8');
+    await fs.writeFile(tempPath, serializeDb(db), 'utf8');
     await fs.rename(tempPath, DB_PATH);
   });
 }
