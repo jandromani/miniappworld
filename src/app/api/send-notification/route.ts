@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 
 type RateLimitEntry = {
   windowStart: number;
@@ -108,7 +109,9 @@ function logAudit(event: {
   const apiKeyHash = event.apiKey ? hashKey(event.apiKey) : 'missing';
   const timestamp = new Date().toISOString();
 
-  console.log('[notification_audit]', {
+  logApiEvent(event.success ? 'info' : 'warn', {
+    path: 'send-notification',
+    event: 'notification_audit',
     timestamp,
     apiKeyHash,
     walletCount: event.walletCount,
@@ -124,12 +127,19 @@ export async function POST(req: NextRequest) {
 
   if (!isAuthenticated(req)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'auth_failed' });
-    return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
+    return apiErrorResponse('UNAUTHORIZED', {
+      message: 'No autorizado',
+      path: 'send-notification',
+      details: { reason: 'auth_failed' },
+    });
   }
 
   if (!checkRateLimit(providedKey!)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'rate_limited' });
-    return NextResponse.json({ success: false, message: 'Límite de solicitudes excedido, intente más tarde' }, { status: 429 });
+    return apiErrorResponse('RATE_LIMITED', {
+      message: 'Límite de solicitudes excedido, intente más tarde',
+      path: 'send-notification',
+    });
   }
 
   const body = await req.json();
@@ -143,7 +153,11 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: `validation_failed:${validationErrors.join('|')}`,
     });
-    return NextResponse.json({ success: false, message: validationErrors.join('; ') }, { status: 400 });
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: validationErrors.join('; '),
+      path: 'send-notification',
+      details: { validationErrors },
+    });
   }
 
   const { walletAddresses, title, message, miniAppPath } = body;
@@ -178,17 +192,20 @@ export async function POST(req: NextRequest) {
 
     logAudit({ apiKey: providedKey, walletCount: walletAddresses.length, clientIp, success: true });
 
+    logApiEvent('info', {
+      path: 'send-notification',
+      action: 'dispatch',
+      walletCount: walletAddresses.length,
+      status: response.status,
+    });
+
     return NextResponse.json(result, { status: response.ok ? 200 : response.status });
   } catch (error) {
     logAudit({ apiKey: providedKey, walletCount: walletAddresses.length, clientIp, success: false, reason: 'upstream_error' });
-    console.error('Error enviando notificación al servicio protegido', error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
-      },
-      { status: 502 }
-    );
+    return apiErrorResponse('UPSTREAM_ERROR', {
+      message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
+      path: 'send-notification',
+      details: { error: (error as Error)?.message },
+    });
   }
 }
