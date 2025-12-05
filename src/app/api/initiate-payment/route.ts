@@ -127,7 +127,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true, reference, tournamentId: existingPayment.tournament_id });
+    return NextResponse.json({
+      success: true,
+      reference,
+      tournamentId: existingPayment.tournament_id,
+      userId: existingPayment.user_id ?? sessionIdentity.user_id,
+      walletAddress: existingPayment.wallet_address ?? verifiedWalletAddress,
+    });
   }
 
   if (token && typeof token !== 'string') {
