@@ -1,5 +1,5 @@
 import tournamentsConfig from '@/config/tournaments.json';
-import { SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
+import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import {
   addTournamentParticipant,
   findTournamentRecord,
@@ -192,8 +192,19 @@ export function validateTokenForTournament(
   }
 
   const normalizedAmount = typeof amount === 'string' ? amount : amount.toString();
-  const expected = BigInt(tournament.buyInAmount);
-  const incoming = BigInt(normalizedAmount);
+  const buyInTokenKey = resolveTokenFromAddress(normalizeTokenIdentifier(tournament.buyInToken));
+  const buyInDecimals = buyInTokenKey ? SUPPORTED_TOKENS[buyInTokenKey].decimals : 18;
+  const incomingDecimals = tokenConfig.decimals ?? 18;
+
+  const targetDecimals = Math.max(buyInDecimals, incomingDecimals);
+  const scaleAmount = (rawAmount: bigint, amountDecimals: number) => {
+    if (amountDecimals === targetDecimals) return rawAmount;
+    const multiplier = 10n ** BigInt(targetDecimals - amountDecimals);
+    return rawAmount * multiplier;
+  };
+
+  const expected = scaleAmount(BigInt(tournament.buyInAmount), buyInDecimals);
+  const incoming = scaleAmount(BigInt(normalizedAmount), incomingDecimals);
 
   if (incoming <= 0n) {
     return { valid: false, message: 'El monto debe ser un número positivo' };

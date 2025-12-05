@@ -57,7 +57,7 @@ export function getTokenSymbolByAddress(address: string): string {
 
 export function getTokenDecimalsByAddress(address: string): number {
   const token = resolveTokenFromAddress(address);
-  if (!token) return 18;
+  if (!token) return 18; // Fallback to 18 decimals to avoid blocking flows when token metadata is missing
 
   return SUPPORTED_TOKENS[token].decimals;
 }
