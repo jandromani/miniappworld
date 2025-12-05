@@ -24,14 +24,22 @@ import { sendNotification } from '@/lib/notificationService';
 
 const SESSION_COOKIE = 'session_token';
 
-export async function POST(req: NextRequest, { params }: { params: { tournamentId: string } }) {
+type JoinParams = { tournamentId?: string; id?: string };
+
+export async function POST(req: NextRequest, { params }: { params: JoinParams }) {
   const rateKey = req.headers.get('x-real-ip') ?? req.headers.get('x-forwarded-for') ?? 'global';
   const rate = rateLimit(rateKey);
   if (!rate.allowed) {
     return NextResponse.json({ error: 'Límite de solicitudes alcanzado' }, { status: 429 });
   }
 
-  const tournament = await getTournament(params.tournamentId);
+  const tournamentId = params.tournamentId ?? params.id;
+
+  if (!tournamentId) {
+    return NextResponse.json({ error: 'Torneo no especificado' }, { status: 400 });
+  }
+
+  const tournament = await getTournament(tournamentId);
 
   if (!tournament) {
     return NextResponse.json({ error: 'Torneo no encontrado' }, { status: 404 });
@@ -44,7 +52,7 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     await recordAuditEvent({
       action: 'join_tournament',
       entity: 'tournaments',
-      entityId: params.tournamentId,
+      entityId: tournamentId,
       status: 'error',
       details: { reason: 'missing_session_token', paymentReference },
     });
@@ -57,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     await recordAuditEvent({
       action: 'join_tournament',
       entity: 'tournaments',
-      entityId: params.tournamentId,
+      entityId: tournamentId,
       sessionId: sessionToken,
       status: 'error',
       details: { reason: 'session_not_found', paymentReference },
