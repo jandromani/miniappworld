@@ -9,6 +9,7 @@ import {
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 
 function normalizeTokenAmount(value: unknown): bigint {
@@ -27,6 +28,11 @@ function normalizeTokenAmount(value: unknown): bigint {
 }
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const { payload, reference } = (await req.json()) as {
     payload: MiniAppPaymentSuccessPayload;
     reference: string;
@@ -88,13 +94,6 @@ export async function POST(req: NextRequest) {
 
   if (storedPayment.status === 'confirmed') {
     return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
-  }
-
-  if (!process.env.APP_ID || !process.env.DEV_PORTAL_API_KEY) {
-    return NextResponse.json(
-      { success: false, message: 'Faltan APP_ID o DEV_PORTAL_API_KEY' },
-      { status: 500 }
-    );
   }
 
   // 2. Consultar estado del pago en Developer Portal API

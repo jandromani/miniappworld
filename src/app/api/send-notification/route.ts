@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
 
@@ -120,6 +121,11 @@ async function logAudit(event: {
 }
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const clientIp = getClientIp(req);
   const authResult = await authenticate(req);
   const providedKey = authResult.providedKey;
