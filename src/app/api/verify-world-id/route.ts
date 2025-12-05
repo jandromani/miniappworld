@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { verifyCloudProof } from '@worldcoin/minikit-js';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import {
   findWorldIdVerificationByNullifier,
   findWorldIdVerificationByUser,
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
 
     if (typeof actionCandidate !== 'string' || !isValidWorldIdAction(actionCandidate)) {
       console.warn('[verify-world-id] Acción no permitida', { action });
+      recordApiFailureMetric(PATH, 'INVALID_ACTION');
       return NextResponse.json(
         {
           success: false,
@@ -142,8 +144,12 @@ export async function POST(req: NextRequest) {
     return response;
   } catch (error) {
     if (isLocalStorageDisabled(error)) {
+      recordApiFailureMetric(PATH, 'LOCAL_STORAGE_DISABLED');
       return NextResponse.json(
-        { success: false, error: 'Persistencia local deshabilitada. Configure almacenamiento compartido o servicio remoto.' },
+        {
+          success: false,
+          error: 'Persistencia local deshabilitada. Configure almacenamiento compartido o servicio remoto.',
+        },
         { status: 503 }
       );
     }
