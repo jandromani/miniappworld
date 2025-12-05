@@ -7,6 +7,8 @@ comodines, endpoints de pagos y contrato de torneos en World Chain.
 ## Requisitos
 - Node.js 18+
 - Variables de entorno definidas en `.env` (ver `.env.example`).
+  - Define `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` para habilitar rate limiting distribuido entre réplicas. Si no están
+    presentes se usa un bucket en memoria (solo recomendado para desarrollo local).
 
 ## Scripts
 ```bash
@@ -38,9 +40,14 @@ World ID y `sendHapticFeedback` para feedback táctil.
 - `app/api/initiate-payment`: Genera payload para comando `pay`.
 - `app/api/confirm-payment`: Confirma y registra hashes de pago.
 - `app/api/send-notification`: Simula el envío de notificaciones a ganadores.
+  - Usa un archivo duradero `data/notification-keys.json` para mantener una lista de claves y roles activos.
+  - Ejemplo: `{ "keys": [{ "key": "api-key-1", "role": "ops" }, { "key": "api-key-2", "role": "marketing", "revoked": false }] }`.
+  - También escribe auditorías en `data/notification-audit.log` (un registro por línea en formato JSON).
 - `app/api/tournaments/create`: Valida (mock) la creación de torneos y whitelist de tokens.
 - `contracts/TournamentManager.sol`: Contrato principal para registrar torneos, manejar buy-ins y distribuir premios usando ERC-20.
 - `contracts/TournamentPool.sol`: Contrato simple para pools de torneos (ejemplo legacy).
+
+La capa de persistencia vive en `src/lib/database.ts`, que centraliza pagos, torneos y auditorías. El store antiguo de pagos fue retirado para evitar caminos de importación duplicados.
 
 ## Páginas
 - `/`: Overview del proyecto y fases.
