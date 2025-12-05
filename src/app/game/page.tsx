@@ -1,7 +1,10 @@
 'use client';
 
+import { useCallback, useState } from 'react';
 import { useMemo, useState } from 'react';
 import { MiniKit } from '@worldcoin/minikit-js';
+
+import { useHapticsPreference } from '@/lib/useHapticsPreference';
 
 type MockQuestion = {
   id: string;
@@ -22,6 +25,17 @@ const sampleQuestions: MockQuestion[] = [
 export default function GamePage() {
   const [question] = useState<MockQuestion>(sampleQuestions[0]);
   const [feedback, setFeedback] = useState<string | null>(null);
+  const { hapticsEnabled } = useHapticsPreference();
+
+  const sendHaptics = useCallback(
+    async (isCorrect: boolean) => {
+      if (!hapticsEnabled) return;
+
+      try {
+        await MiniKit.commandsAsync.sendHapticFeedback({
+          hapticsType: 'impact',
+          style: 'light',
+        });
   const [score, setScore] = useState(0);
   const [correctAnswers, setCorrectAnswers] = useState(0);
   const [totalAnswers, setTotalAnswers] = useState(0);
@@ -66,17 +80,23 @@ export default function GamePage() {
     const nextCorrect = isCorrect ? correctAnswers + 1 : correctAnswers;
     const nextScore = isCorrect ? score + 100 : score;
 
-    MiniKit.commands.sendHapticFeedback({
-      hapticsType: 'impact',
-      style: 'light',
-    });
+        await MiniKit.commandsAsync.sendHapticFeedback({
+          hapticsType: 'notification',
+          style: isCorrect ? 'success' : 'error',
+        });
+      } catch (error) {
+        console.warn('No se pudo enviar feedback háptico', error);
+      }
+    },
+    [hapticsEnabled],
+  );
 
-    MiniKit.commands.sendHapticFeedback({
-      hapticsType: 'notification',
-      style: isCorrect ? 'success' : 'error',
-    });
+  const handleAnswerSelection = async (selectedIndex: number) => {
+    const isCorrect = selectedIndex === question.correctIndex;
 
     setFeedback(isCorrect ? '¡Respuesta correcta!' : 'Respuesta incorrecta.');
+
+    await sendHaptics(isCorrect);
     setTotalAnswers(nextTotal);
     setCorrectAnswers(nextCorrect);
     setScore(nextScore);
