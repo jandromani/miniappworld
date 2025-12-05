@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { verifyCloudProof } from '@worldcoin/minikit-js';
 import {
   findWorldIdVerificationByNullifier,
+  findWorldIdVerificationByUser,
   insertWorldIdVerification,
 } from '@/lib/database';
 
@@ -19,6 +20,17 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           error: 'Faltan parámetros obligatorios (proof, nullifier_hash, merkle_root)',
+        },
+        { status: 400 }
+      );
+    }
+
+    if (wallet_address && !/^0x[a-fA-F0-9]{40}$/.test(wallet_address)) {
+      console.warn('[verify-world-id] Dirección de wallet inválida', { wallet_address });
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'wallet_address no tiene un formato válido',
         },
         { status: 400 }
       );
@@ -46,6 +58,24 @@ export async function POST(req: NextRequest) {
         },
         { status: 409 }
       );
+    }
+
+    if (user_id) {
+      const existingUserIdentity = await findWorldIdVerificationByUser(user_id);
+      if (existingUserIdentity && existingUserIdentity.nullifier_hash !== nullifier_hash) {
+        console.warn('[verify-world-id] user_id inconsistente', {
+          user_id,
+          nullifier_hash,
+          existingNullifier: existingUserIdentity.nullifier_hash,
+        });
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Este usuario ya está vinculado a otra identidad',
+          },
+          { status: 409 }
+        );
+      }
     }
 
     const actionName = action ?? 'trivia_game_access';
