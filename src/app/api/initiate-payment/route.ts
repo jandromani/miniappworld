@@ -1,15 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createPaymentRecord, findPaymentByReference, findWorldIdVerificationByUser } from '@/lib/database';
+import {
+  createPaymentRecord,
+  findPaymentByReference,
+  findWorldIdVerificationBySession,
+} from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 
+const SESSION_COOKIE = 'session_token';
+
 export async function POST(req: NextRequest) {
   const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
-  const userId = req.headers.get('x-user-id') ?? bodyUserId ?? 'anonymous';
-  const sessionToken = req.cookies.get('session_token')?.value;
-  const verifiedIdentity = userId ? await findWorldIdVerificationByUser(userId) : undefined;
-  const verifiedUserId = verifiedIdentity?.user_id ?? userId ?? 'anonymous';
-  const verifiedWalletAddress = verifiedIdentity?.wallet_address ?? walletAddress;
+  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+
+  if (!sessionToken) {
+    return NextResponse.json(
+      { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
+      { status: 401 }
+    );
+  }
+
+  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+
+  if (!sessionIdentity) {
+    return NextResponse.json(
+      { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
+      { status: 401 }
+    );
+  }
+
+  if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
+    return NextResponse.json(
+      { success: false, message: 'El usuario enviado no coincide con la sesión activa' },
+      { status: 403 }
+    );
+  }
+
+  const userId = sessionIdentity.user_id;
 
   if (!reference || !type) {
     return NextResponse.json(

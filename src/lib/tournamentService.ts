@@ -42,12 +42,19 @@ export async function joinTournament(
   token: SupportedToken,
   amount: number
 ): Promise<void> {
+  const userId = typeof window !== 'undefined' ? localStorage.getItem('userId') : null;
+
+  if (!userId) {
+    throw new Error('Debes verificar tu identidad antes de unirte al torneo');
+  }
+
   await payForTournament(token, amount, tournamentId);
 
   const response = await fetch(`${BASE_PATH}/${tournamentId}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, amount }),
+    credentials: 'include',
+    body: JSON.stringify({ token, amount, userId }),
   });
 
   await handleResponse<void>(response);

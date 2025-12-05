@@ -32,6 +32,7 @@ export default function Home() {
         const res = await fetch('/api/verify-world-id', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({
             proof: finalPayload.proof,
             nullifier_hash: finalPayload.nullifier_hash,

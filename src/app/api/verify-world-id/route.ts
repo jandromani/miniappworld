@@ -77,6 +77,7 @@ export async function POST(req: NextRequest) {
       verification_level: verification_level ?? 'orb',
       wallet_address,
       user_id: userId,
+      session_token: sessionToken,
     });
     const response = NextResponse.json({
       success: true,
