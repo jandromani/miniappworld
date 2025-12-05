@@ -12,11 +12,16 @@ jest.mock('@worldcoin/minikit-js', () => ({
     commandsAsync: {
       sendHapticFeedback: (...args: any[]) => sendHapticFeedbackMock(...args),
     },
+    isInstalled: jest.fn(() => true),
   },
 }));
 
 jest.mock('@/lib/useHapticsPreference', () => ({
   useHapticsPreference: () => useHapticsPreferenceMock(),
+}));
+
+jest.mock('@/lib/haptics', () => ({
+  sendNotificationHaptics: jest.fn(),
 }));
 
 describe('GamePage responsive layout', () => {
@@ -35,6 +40,7 @@ describe('GamePage responsive layout', () => {
 
     expect(screen.getByTestId('score-grid')).toHaveClass('grid-cols-2');
     expect(screen.getByTestId('session-id')).toHaveTextContent('session-test-id');
+    expect(screen.getByTestId('session-status')).toBeInTheDocument();
   });
 
   it('renders answer buttons with full-width tap targets', () => {

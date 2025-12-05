@@ -5,6 +5,7 @@ import { MiniKit } from '@worldcoin/minikit-js';
 import { useRouter } from 'next/navigation';
 import { MEMECOIN_CONFIG, SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
 import { payForQuickMatch, payForTournament } from '@/lib/paymentService';
+import { sendNotificationHaptics } from '@/lib/haptics';
 import { useHapticsPreference } from '@/lib/useHapticsPreference';
 
 const BUY_IN_DEMO_TOURNAMENT = 'demo-tournament';
@@ -21,6 +22,7 @@ export default function TournamentBuyInPage() {
   const [isPaying, setIsPaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [amountError, setAmountError] = useState<string | null>(null);
+  const [paymentNotice, setPaymentNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const errorRef = useRef<HTMLDivElement | null>(null);
   const amountInputRef = useRef<HTMLInputElement | null>(null);
   const { hapticsEnabled } = useHapticsPreference();
@@ -50,11 +52,15 @@ export default function TournamentBuyInPage() {
   const handlePayment = async () => {
     setError(null);
     setAmountError(null);
+    setPaymentNotice(null);
     setIsPaying(true);
 
     try {
       if (mode === 'quick') {
         await payForQuickMatch();
+        setPaymentNotice({ type: 'success', message: 'Pago verificado. Abriendo partida rápida.' });
+        await sendNotificationHaptics('success', hapticsEnabled);
+        setTimeout(() => router.push('/game'), 200);
         await sendPaymentHaptics('success');
         router.push('/game');
         return;
@@ -68,6 +74,14 @@ export default function TournamentBuyInPage() {
       }
 
       await payForTournament(selectedToken, amount, BUY_IN_DEMO_TOURNAMENT);
+      setPaymentNotice({ type: 'success', message: 'Buy-in completado. Continúa con tu registro.' });
+      await sendNotificationHaptics('success', hapticsEnabled);
+      setTimeout(() => router.push('/tournament/registro'), 200);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error inesperado al procesar el pago';
+      setError(message);
+      setPaymentNotice({ type: 'error', message });
+      await sendNotificationHaptics('error', hapticsEnabled);
       await sendPaymentHaptics('success');
       router.push('/tournament/registro');
     } catch (err) {
@@ -89,6 +103,20 @@ export default function TournamentBuyInPage() {
           para móviles.
         </p>
       </header>
+
+      {paymentNotice && (
+        <div
+          className={`rounded-md border px-3 py-2 text-sm ${
+            paymentNotice.type === 'success'
+              ? 'border-green-200 bg-green-50 text-green-800'
+              : 'border-red-200 bg-red-50 text-red-800'
+          }`}
+          role={paymentNotice.type === 'success' ? 'status' : 'alert'}
+          aria-live={paymentNotice.type === 'success' ? 'polite' : 'assertive'}
+        >
+          {paymentNotice.message}
+        </div>
+      )}
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <button

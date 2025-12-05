@@ -30,6 +30,14 @@ jest.mock('@/lib/paymentService', () => ({
   payForTournament: (...args: any[]) => payForTournament(...args),
 }));
 
+jest.mock('@/lib/haptics', () => ({
+  sendNotificationHaptics: jest.fn(),
+}));
+
+jest.mock('@/lib/useHapticsPreference', () => ({
+  useHapticsPreference: () => ({ hapticsEnabled: true }),
+}));
+
 describe('Tournament buy-in mobile experience', () => {
   beforeEach(() => {
     sendHapticFeedbackMock.mockClear();
