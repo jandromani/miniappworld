@@ -12,6 +12,7 @@ import {
   TOURNAMENT_CONTRACT_ADDRESS,
 } from './constants';
 import { payWithMiniKit } from './miniKitClient';
+import { fetchWithBackoff } from './fetchWithBackoff';
 
 const RECEIVER_ADDRESS = process.env.NEXT_PUBLIC_RECEIVER_ADDRESS || '0xYourAddress';
 
@@ -54,11 +55,13 @@ function getTokenConfig(token: SupportedToken, amount: number): TokenConfig {
 }
 
 async function initiatePayment(body: InitiatePaymentPayload) {
-  const response = await fetch('/api/initiate-payment', {
+  const response = await fetchWithBackoff('/api/initiate-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify(body),
+    timeoutMs: 5000,
+    maxRetries: 2,
   });
 
   if (!response.ok) {
@@ -90,11 +93,13 @@ async function confirmPayment(
   payload: MiniAppPaymentSuccessPayload,
   reference: string
 ): Promise<{ success: boolean; message?: string; reference: string }> {
-  const response = await fetch('/api/confirm-payment', {
+  const response = await fetchWithBackoff('/api/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify({ payload, reference }),
+    timeoutMs: 5000,
+    maxRetries: 2,
   });
 
   let result: { success: boolean; message?: string } | null = null;
