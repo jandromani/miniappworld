@@ -7,6 +7,11 @@ import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
 
+type NotificationApiKey = {
+  value: string;
+  expiresAt?: Date;
+};
+
 type RateLimitEntry = {
   windowStart: number;
   count: number;
@@ -24,6 +29,118 @@ const NONCE_TTL_MS = 5 * 60_000;
 
 const rateLimitByKey = new Map<string, RateLimitEntry>();
 const nonceCache = new Map<string, number>();
+
+function parseApiKeyEntry(entry: unknown, index: number): NotificationApiKey {
+  if (typeof entry === 'string') {
+    if (entry.trim().length === 0) {
+      throw new Error(`NOTIFICATIONS_API_KEYS[${index}] no puede ser una cadena vacía`);
+    }
+
+    return { value: entry };
+  }
+
+  if (!entry || typeof entry !== 'object') {
+    throw new Error(`Entrada de NOTIFICATIONS_API_KEYS inválida en índice ${index}`);
+  }
+
+  const { key, expiresAt } = entry as { key?: unknown; expiresAt?: unknown };
+
+  if (typeof key !== 'string' || key.trim().length === 0) {
+    throw new Error(`NOTIFICATIONS_API_KEYS[${index}] debe incluir una clave no vacía`);
+  }
+
+  let parsedExpires: Date | undefined;
+
+  if (expiresAt !== undefined) {
+    if (typeof expiresAt !== 'string' || expiresAt.trim().length === 0) {
+      throw new Error(`NOTIFICATIONS_API_KEYS[${index}].expiresAt debe ser una fecha en formato ISO`);
+    }
+
+    parsedExpires = new Date(expiresAt);
+
+    if (Number.isNaN(parsedExpires.getTime())) {
+      throw new Error(`NOTIFICATIONS_API_KEYS[${index}].expiresAt no es una fecha válida`);
+    }
+  }
+
+  return { value: key, expiresAt: parsedExpires };
+}
+
+function loadConfiguredKeys(): NotificationApiKey[] {
+  const multiKeyValue = process.env.NOTIFICATIONS_API_KEYS;
+  const singleKeyValue = process.env.NOTIFICATIONS_API_KEY;
+
+  if (!multiKeyValue && !singleKeyValue) {
+    throw new Error('Debe definir NOTIFICATIONS_API_KEYS (JSON) o NOTIFICATIONS_API_KEY para usar /api/send-notification');
+  }
+
+  if (multiKeyValue) {
+    let parsed: unknown;
+
+    try {
+      parsed = JSON.parse(multiKeyValue);
+    } catch (error) {
+      throw new Error('NOTIFICATIONS_API_KEYS debe ser un arreglo JSON de objetos { key, expiresAt? }');
+    }
+
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      throw new Error('NOTIFICATIONS_API_KEYS debe ser un arreglo JSON con al menos una entrada');
+    }
+
+    return parsed.map((entry, index) => parseApiKeyEntry(entry, index));
+  }
+
+  return [{ value: singleKeyValue as string }];
+}
+
+function isActiveKey(key: NotificationApiKey, now: Date) {
+  return !key.expiresAt || key.expiresAt.getTime() > now.getTime();
+}
+
+function safeKeyCompare(provided: string, expected: string) {
+  const providedBuffer = Buffer.from(provided);
+  const expectedBuffer = Buffer.from(expected);
+
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+
+  try {
+    return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+  } catch (error) {
+    return false;
+  }
+}
+
+function authenticateApiKey(providedKey: string | null) {
+  const now = new Date();
+
+  if (!providedKey) {
+    return { authenticated: false, reason: 'missing_api_key' as const };
+  }
+
+  const matchedKey = configuredNotificationKeys.find((key) => safeKeyCompare(providedKey, key.value));
+
+  if (matchedKey && !isActiveKey(matchedKey, now)) {
+    return { authenticated: false, reason: 'key_expired' as const };
+  }
+
+  const activeMatch = configuredNotificationKeys.find(
+    (key) => isActiveKey(key, now) && safeKeyCompare(providedKey, key.value)
+  );
+
+  if (activeMatch) {
+    return { authenticated: true, reason: 'authenticated' as const };
+  }
+
+  const hasActiveKeys = configuredNotificationKeys.some((key) => isActiveKey(key, now));
+
+  if (!hasActiveKeys) {
+    return { authenticated: false, reason: 'no_active_keys' as const };
+  }
+
+  return { authenticated: false, reason: 'auth_failed' as const };
+}
+
+const configuredNotificationKeys = loadConfiguredKeys();
 
 function hashKey(key: string) {
   return crypto.createHash('sha256').update(key).digest('hex');
@@ -184,6 +301,10 @@ export async function POST(req: NextRequest) {
 
   const clientIp = getClientIp(req);
   const providedKey = req.headers.get('x-api-key');
+  const authResult = authenticateApiKey(providedKey);
+
+  if (!authResult.authenticated) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: authResult.reason });
   const origin = req.headers.get('origin');
   const fingerprint = getClientFingerprint(req, clientIp);
 
