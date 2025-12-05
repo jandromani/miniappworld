@@ -7,6 +7,7 @@ comodines, endpoints de pagos y contrato de torneos en World Chain.
 ## Requisitos
 - Node.js 18+
 - Variables de entorno definidas en `.env` (ver `.env.example`).
+  - Al iniciar se validan las claves críticas: `APP_ID`, `DEV_PORTAL_API_KEY`, `NEXT_PUBLIC_APP_ID`, `NEXT_PUBLIC_DEV_PORTAL_API_KEY`, `NEXT_PUBLIC_RECEIVER_ADDRESS` y al menos una de `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`.
   - Define `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` para habilitar rate limiting distribuido entre réplicas. Si no están
     presentes se usa un bucket en memoria (solo recomendado para desarrollo local).
 
@@ -28,9 +29,11 @@ npm run start
 
 ## Configuración de MiniKit
 Define en `.env`:
-- `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
-- `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
+- `APP_ID` y `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
+- `DEV_PORTAL_API_KEY` y `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
 - `NEXT_PUBLIC_TREASURY_ADDRESS`: Address que recibe buy-ins.
+- `NEXT_PUBLIC_RECEIVER_ADDRESS`: Address que recibe pagos simulados en el backend.
+- `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`: Claves para autenticar `/api/send-notification`.
 
 El proveedor de MiniKit se inicializa en `app/providers.tsx` y ejecuta `walletAuth` al
 montar la app. En la pantalla de juego (`/game`) puedes lanzar `verify` para validar
@@ -113,6 +116,14 @@ Las rutas de documentación relevantes son:
 - Tests de contratos en Foundry: `forge test`.
 - Tests unitarios/integración de Mini App (Jest): `npm test`.
 - Ejecución en CI (serializado): `npm run test:ci`.
+
+### Pruebas móviles de juego y pagos
+- Ejecuta `npm test -- --runTestsByPath __tests__/gamePage.mobile.test.tsx __tests__/tournamentBuyIn.mobile.test.tsx` para
+  validar los estilos responsivos en pantallas reducidas.
+- Verificación manual en 360x640 (móvil):
+  - `/game`: el header se apila, las estadísticas se muestran en 2 columnas y los botones de respuesta ocupan todo el ancho.
+  - `/tournament/buy-in`: los botones de modo se apilan, la grilla de tokens usa 2 columnas y el CTA de pago es de ancho
+    completo.
 
 Las pruebas de Jest utilizan mocks deterministas del Developer Portal y World ID para simular Verify + Pay + Join, validar montos/tokenes y verificar el manejo de errores (identidad no verificada, pagos rechazados o confirmaciones fallidas).
 
