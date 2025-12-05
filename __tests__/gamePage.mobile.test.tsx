@@ -1,19 +1,23 @@
 /** @jest-environment jsdom */
 
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import GamePage from '@/app/game/page';
+
+const sendHapticFeedbackMock = jest.fn().mockResolvedValue(undefined);
+const useHapticsPreferenceMock = jest.fn(() => ({ hapticsEnabled: true }));
 
 jest.mock('@worldcoin/minikit-js', () => ({
   MiniKit: {
     commandsAsync: {
-      sendHapticFeedback: jest.fn().mockResolvedValue(undefined),
+      sendHapticFeedback: (...args: any[]) => sendHapticFeedbackMock(...args),
     },
     isInstalled: jest.fn(() => true),
   },
 }));
 
 jest.mock('@/lib/useHapticsPreference', () => ({
-  useHapticsPreference: () => ({ hapticsEnabled: false }),
+  useHapticsPreference: () => useHapticsPreferenceMock(),
 }));
 
 jest.mock('@/lib/haptics', () => ({
@@ -27,6 +31,8 @@ describe('GamePage responsive layout', () => {
       value: { randomUUID: () => 'session-test-id' },
       configurable: true,
     });
+    sendHapticFeedbackMock.mockClear();
+    useHapticsPreferenceMock.mockReturnValue({ hapticsEnabled: true });
   });
 
   it('displays mobile-friendly score grid and session info', () => {
@@ -42,5 +48,29 @@ describe('GamePage responsive layout', () => {
 
     const optionButtons = screen.getAllByRole('button', { name: /Madrid|París|Roma|Lisboa/ });
     expect(optionButtons[0]).toHaveClass('w-full');
+  });
+
+  it('triggers success haptics on correct answer when enabled', async () => {
+    const user = userEvent.setup();
+    render(<GamePage />);
+
+    const correctOption = screen.getByRole('button', { name: 'París' });
+    await user.click(correctOption);
+
+    await waitFor(() =>
+      expect(sendHapticFeedbackMock).toHaveBeenCalledWith({ hapticsType: 'notification', style: 'success' }),
+    );
+  });
+
+  it('triggers error haptics on incorrect answer when enabled', async () => {
+    const user = userEvent.setup();
+    render(<GamePage />);
+
+    const incorrectOption = screen.getByRole('button', { name: 'Madrid' });
+    await user.click(incorrectOption);
+
+    await waitFor(() =>
+      expect(sendHapticFeedbackMock).toHaveBeenCalledWith({ hapticsType: 'notification', style: 'error' }),
+    );
   });
 });

@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { MiniKit } from '@worldcoin/minikit-js';
 import { useRouter } from 'next/navigation';
 import { MEMECOIN_CONFIG, SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
 import { payForQuickMatch, payForTournament } from '@/lib/paymentService';
@@ -26,6 +27,22 @@ export default function TournamentBuyInPage() {
   const amountInputRef = useRef<HTMLInputElement | null>(null);
   const { hapticsEnabled } = useHapticsPreference();
 
+  const sendPaymentHaptics = useCallback(
+    async (style: 'success' | 'error') => {
+      if (!hapticsEnabled) return;
+
+      try {
+        await MiniKit.commandsAsync.sendHapticFeedback({
+          hapticsType: 'notification',
+          style,
+        });
+      } catch (err) {
+        console.warn('No se pudo enviar feedback háptico de pago', err);
+      }
+    },
+    [hapticsEnabled],
+  );
+
   useEffect(() => {
     if (error && errorRef.current) {
       errorRef.current.focus();
@@ -44,6 +61,8 @@ export default function TournamentBuyInPage() {
         setPaymentNotice({ type: 'success', message: 'Pago verificado. Abriendo partida rápida.' });
         await sendNotificationHaptics('success', hapticsEnabled);
         setTimeout(() => router.push('/game'), 200);
+        await sendPaymentHaptics('success');
+        router.push('/game');
         return;
       }
 
@@ -63,6 +82,12 @@ export default function TournamentBuyInPage() {
       setError(message);
       setPaymentNotice({ type: 'error', message });
       await sendNotificationHaptics('error', hapticsEnabled);
+      await sendPaymentHaptics('success');
+      router.push('/tournament/registro');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Error inesperado al procesar el pago';
+      setError(message);
+      void sendPaymentHaptics('error');
     } finally {
       setIsPaying(false);
     }
@@ -226,7 +251,7 @@ export default function TournamentBuyInPage() {
         type="button"
         onClick={handlePayment}
         disabled={isPaying}
-        className="w-full rounded-lg bg-blue-600 px-4 py-3 text-white transition hover:bg-blue-700 disabled:opacity-60 sm:w-auto"
+        className="w-full rounded-lg bg-blue-600 px-4 py-3 text-white transition hover:bg-blue-700 disabled:opacity-60"
         aria-busy={isPaying}
       >
         {isPaying ? 'Procesando...' : mode === 'quick' ? 'Pagar y Jugar (1 WLD)' : 'Pagar e Inscribirse'}

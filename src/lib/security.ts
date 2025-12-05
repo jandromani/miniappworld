@@ -1,4 +1,8 @@
-import { NextRequest } from 'next/server';
+import { randomBytes } from 'crypto';
+import { NextRequest, NextResponse } from 'next/server';
+
+const CSRF_COOKIE = 'csrf_token';
+const CSRF_HEADER = 'x-csrf-token';
 
 function getAllowedHosts(req: NextRequest) {
   const envHosts = process.env.ALLOWED_HOSTS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
@@ -30,3 +34,35 @@ export function validateSameOrigin(req: NextRequest) {
 
   return { valid: true as const };
 }
+
+export function generateCsrfToken() {
+  return randomBytes(32).toString('hex');
+}
+
+export function setCsrfCookie(response: NextResponse, token: string) {
+  response.cookies.set(CSRF_COOKIE, token, {
+    httpOnly: false,
+    secure: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 60 * 60 * 24 * 7,
+  });
+}
+
+export function validateCsrf(req: NextRequest) {
+  const csrfCookie = req.cookies.get(CSRF_COOKIE)?.value;
+  const csrfHeader = req.headers.get(CSRF_HEADER);
+
+  if (!csrfCookie || !csrfHeader) {
+    return { valid: false as const, reason: 'missing_csrf_token' as const };
+  }
+
+  if (csrfCookie !== csrfHeader) {
+    return { valid: false as const, reason: 'csrf_token_mismatch' as const };
+  }
+
+  return { valid: true as const, token: csrfCookie };
+}
+
+export const CSRF_HEADER_NAME = CSRF_HEADER;
+export const CSRF_COOKIE_NAME = CSRF_COOKIE;

@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { verifyCloudProof } from '@worldcoin/minikit-js';
-import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
-import { recordApiFailureMetric } from '@/lib/metrics';
 import { ApiLogLevel, apiErrorResponse, logApiEvent, type ApiErrorCode } from '@/lib/apiError';
+import { recordApiFailureMetric } from '@/lib/metrics';
+import { generateCsrfToken, setCsrfCookie } from '@/lib/security';
 import {
   findWorldIdVerificationByNullifier,
   findWorldIdVerificationByUser,
   insertWorldIdVerification,
   isLocalStorageDisabled,
 } from '@/lib/database';
-import { DEFAULT_WORLD_ID_ACTION, isValidWorldIdAction, type WorldIdAction } from '@/lib/worldId';
+import { getConfiguredWorldIdAction, isValidWorldIdAction, type WorldIdAction } from '@/lib/worldId';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { isValidEvmAddress } from '@/lib/addressValidation';
 
@@ -166,7 +166,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const actionCandidate = action ?? DEFAULT_WORLD_ID_ACTION;
+    const configuredAction = getConfiguredWorldIdAction();
+    const actionCandidate = action ?? configuredAction;
 
     if (typeof actionCandidate !== 'string' || !isValidWorldIdAction(actionCandidate)) {
       console.warn('[verify-world-id] Acción no permitida', { action });
@@ -178,6 +179,16 @@ export async function POST(req: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    if (actionCandidate !== configuredAction) {
+      recordApiFailureMetric(PATH, 'INVALID_ACTION');
+      return apiErrorResponse('FORBIDDEN', {
+        message: 'La acción de World ID no coincide con NEXT_PUBLIC_ACTION configurada',
+        details: { actionCandidate, configuredAction },
+        path: PATH,
+        status: 400,
+      });
     }
 
     const actionName = actionCandidate as WorldIdAction;
@@ -239,6 +250,8 @@ export async function POST(req: NextRequest) {
       createdAt: identityRecord.created_at,
     });
 
+    const csrfToken = generateCsrfToken();
+
     response.cookies.set(SESSION_COOKIE, sessionToken, {
       httpOnly: true,
       secure: true,
@@ -246,6 +259,8 @@ export async function POST(req: NextRequest) {
       path: '/',
       maxAge: 60 * 60 * 24 * 7,
     });
+    setCsrfCookie(response, csrfToken);
+    response.headers.set('x-csrf-token', csrfToken);
 
     logApiEvent('info', {
       path: PATH,
