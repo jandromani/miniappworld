@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { MiniAppPaymentSuccessPayload } from '@worldcoin/minikit-js';
-import { findPaymentByReference, findWorldIdVerificationByUser, updatePaymentStatus } from '@/lib/database';
+import {
+  findPaymentByReference,
+  findWorldIdVerificationBySession,
+  recordAuditEvent,
+  updatePaymentStatus,
+} from '@/lib/database';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
 
@@ -20,6 +25,40 @@ export async function POST(req: NextRequest) {
   };
 
   const sessionToken = req.cookies.get('session_token')?.value;
+  const sessionId = sessionToken;
+
+  if (!sessionToken) {
+    await recordAuditEvent({
+      action: 'confirm_payment',
+      entity: 'payments',
+      entityId: reference,
+      status: 'error',
+      details: { reason: 'missing_session_token' },
+    });
+
+    return NextResponse.json(
+      { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
+      { status: 401 }
+    );
+  }
+
+  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+
+  if (!sessionIdentity) {
+    await recordAuditEvent({
+      action: 'confirm_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId,
+      status: 'error',
+      details: { reason: 'session_not_found' },
+    });
+
+    return NextResponse.json(
+      { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
+      { status: 401 }
+    );
+  }
 
   if (!payload || !reference) {
     return NextResponse.json(
@@ -81,9 +120,14 @@ export async function POST(req: NextRequest) {
   const transactionReference = transaction.reference || transaction.transaction_reference;
 
   if (transactionReference !== reference) {
-    await updatePaymentStatus(reference, 'failed', {
-      reason: 'Referencia devuelta no coincide con el pago iniciado',
-    }, { userId: storedPayment.user_id, sessionId });
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      {
+        reason: 'Referencia devuelta no coincide con el pago iniciado',
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
 
     return NextResponse.json(
       {
@@ -102,10 +146,15 @@ export async function POST(req: NextRequest) {
   try {
     transactionAmount = transactionAmountRaw !== undefined ? normalizeTokenAmount(transactionAmountRaw) : undefined;
   } catch (error) {
-    await updatePaymentStatus(reference, 'failed', { reason: 'Monto devuelto no es válido' }, {
-      userId: storedPayment.user_id,
-      sessionId,
-    });
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      { reason: 'Monto devuelto no es válido' },
+      {
+        userId: storedPayment.user_id,
+        sessionId,
+      }
+    );
     return NextResponse.json({ success: false, message: 'Monto de la transacción no válido' }, { status: 400 });
   }
 
@@ -114,9 +163,14 @@ export async function POST(req: NextRequest) {
     : undefined;
 
   if (storedPayment.session_token && storedPayment.session_token !== sessionToken) {
-    await updatePaymentStatus(reference, 'failed', {
-      reason: 'La sesión actual no coincide con la sesión del pago',
-    });
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      {
+        reason: 'La sesión actual no coincide con la sesión del pago',
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
 
     return NextResponse.json(
       { success: false, message: 'La referencia pertenece a otra sesión' },
@@ -124,14 +178,33 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const verifiedIdentity = storedPayment.user_id
-    ? await findWorldIdVerificationByUser(storedPayment.user_id)
-    : undefined;
+  const verifiedIdentity = sessionIdentity;
+
+  if (storedPayment.user_id && storedPayment.user_id !== verifiedIdentity.user_id) {
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      {
+        reason: 'La sesión no coincide con el usuario asociado al pago',
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
+
+    return NextResponse.json(
+      { success: false, message: 'El pago pertenece a otro usuario verificado' },
+      { status: 403 }
+    );
+  }
 
   if (storedPayment.nullifier_hash && !verifiedIdentity?.nullifier_hash) {
-    await updatePaymentStatus(reference, 'failed', {
-      reason: 'No se pudo validar la identidad asociada al pago',
-    });
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      {
+        reason: 'No se pudo validar la identidad asociada al pago',
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
 
     return NextResponse.json(
       { success: false, message: 'La sesión verificada es requerida para confirmar el pago' },
@@ -144,10 +217,15 @@ export async function POST(req: NextRequest) {
     verifiedIdentity?.nullifier_hash &&
     storedPayment.nullifier_hash !== verifiedIdentity.nullifier_hash
   ) {
-    await updatePaymentStatus(reference, 'failed', {
-      reason: 'La identidad verificada no coincide con la que inició el pago',
-    });
-
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      {
+        reason: 'La identidad verificada no coincide con la que inició el pago',
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
+  
     return NextResponse.json(
       { success: false, message: 'El pago pertenece a otra identidad verificada' },
       { status: 403 }
@@ -159,9 +237,14 @@ export async function POST(req: NextRequest) {
     transactionToken &&
     !tokensMatch(normalizedExpectedToken, normalizeTokenIdentifier(transactionToken))
   ) {
-    await updatePaymentStatus(reference, 'failed', {
-      reason: 'Token no coincide con el pago esperado',
-    }, { userId: storedPayment.user_id, sessionId });
+    await updatePaymentStatus(
+      reference,
+      'failed',
+      {
+        reason: 'Token no coincide con el pago esperado',
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
 
     return NextResponse.json(
       {
@@ -175,9 +258,14 @@ export async function POST(req: NextRequest) {
   if (transactionAmount !== undefined && storedPayment.token_amount) {
     const expected = BigInt(storedPayment.token_amount);
     if (expected !== transactionAmount) {
-      await updatePaymentStatus(reference, 'failed', {
-        reason: 'Monto no coincide con el pago esperado',
-      }, { userId: storedPayment.user_id, sessionId });
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'Monto no coincide con el pago esperado',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
 
       return NextResponse.json(
         { success: false, message: 'El monto cobrado no coincide con el pago solicitado' },
@@ -188,9 +276,14 @@ export async function POST(req: NextRequest) {
 
   if (storedPayment.wallet_address) {
     if (!transactionWallet) {
-      await updatePaymentStatus(reference, 'failed', {
-        reason: 'No se pudo verificar la wallet que realizó el pago',
-      });
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'No se pudo verificar la wallet que realizó el pago',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
 
       return NextResponse.json(
         { success: false, message: 'No se pudo validar la wallet del pago' },
@@ -202,9 +295,14 @@ export async function POST(req: NextRequest) {
       storedPayment.wallet_address.toLowerCase() === transactionWallet.toString().toLowerCase();
 
     if (!sameWallet) {
-      await updatePaymentStatus(reference, 'failed', {
-        reason: 'La wallet cobradora no coincide con la que inició el pago',
-      });
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'La wallet cobradora no coincide con la que inició el pago',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
 
       return NextResponse.json(
         { success: false, message: 'La wallet que pagó no coincide con la esperada' },
@@ -216,9 +314,14 @@ export async function POST(req: NextRequest) {
   if (storedPayment.type === 'tournament') {
     const transactionTournamentId = transaction.tournamentId || transaction.tournament_id || transaction.metadata?.tournamentId;
     if (storedPayment.tournament_id && transactionTournamentId && storedPayment.tournament_id !== transactionTournamentId) {
-      await updatePaymentStatus(reference, 'failed', {
-        reason: 'Referencia de torneo no coincide con el flujo solicitado',
-      }, { userId: storedPayment.user_id, sessionId });
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'Referencia de torneo no coincide con el flujo solicitado',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
 
       return NextResponse.json(
         {
@@ -234,10 +337,15 @@ export async function POST(req: NextRequest) {
 
   if (isSuccessful) {
     const confirmedAt = new Date().toISOString();
-    await updatePaymentStatus(reference, 'confirmed', {
-      transaction_id: payload.transaction_id,
-      confirmed_at: confirmedAt,
-    }, { userId: storedPayment.user_id, sessionId });
+    await updatePaymentStatus(
+      reference,
+      'confirmed',
+      {
+        transaction_id: payload.transaction_id,
+        confirmed_at: confirmedAt,
+      },
+      { userId: storedPayment.user_id, sessionId }
+    );
 
     if (storedPayment.wallet_address) {
       await sendNotification({

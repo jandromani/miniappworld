@@ -13,6 +13,7 @@ import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
   findWorldIdVerificationByUser,
+  recordAuditEvent,
 } from '@/lib/database';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 import { rateLimit } from '@/lib/rateLimit';
@@ -37,12 +38,27 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
   if (!sessionToken) {
+    await recordAuditEvent({
+      action: 'join_tournament',
+      entity: 'tournaments',
+      entityId: params.tournamentId,
+      status: 'error',
+      details: { reason: 'missing_session_token', paymentReference },
+    });
     return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
   }
 
   const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
 
   if (!sessionIdentity) {
+    await recordAuditEvent({
+      action: 'join_tournament',
+      entity: 'tournaments',
+      entityId: params.tournamentId,
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: 'session_not_found', paymentReference },
+    });
     return NextResponse.json({ error: 'La sesión no es válida o expiró' }, { status: 401 });
   }
 

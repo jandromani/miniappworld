@@ -89,7 +89,7 @@ const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
 
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
-type AuditLogEntry = {
+export type AuditLogEntry = {
   timestamp: string;
   action: string;
   entity: string;
@@ -177,6 +177,10 @@ async function appendAuditLog(entry: AuditLogEntry) {
   } catch (error) {
     console.error('[database] No se pudo registrar auditoría', error);
   }
+}
+
+export async function recordAuditEvent(event: Omit<AuditLogEntry, 'timestamp'>) {
+  await appendAuditLog({ ...event, timestamp: new Date().toISOString() });
 }
 
 async function ensureDbFile(): Promise<void> {
