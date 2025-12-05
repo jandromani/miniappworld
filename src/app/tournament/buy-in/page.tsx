@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { MiniKit } from '@worldcoin/minikit-js';
 import { useRouter } from 'next/navigation';
 import { MEMECOIN_CONFIG, SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
 import { payForQuickMatch, payForTournament } from '@/lib/paymentService';
+import { useHapticsPreference } from '@/lib/useHapticsPreference';
 
 const BUY_IN_DEMO_TOURNAMENT = 'demo-tournament';
 
@@ -21,6 +23,23 @@ export default function TournamentBuyInPage() {
   const [amountError, setAmountError] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement | null>(null);
   const amountInputRef = useRef<HTMLInputElement | null>(null);
+  const { hapticsEnabled } = useHapticsPreference();
+
+  const sendPaymentHaptics = useCallback(
+    async (style: 'success' | 'error') => {
+      if (!hapticsEnabled) return;
+
+      try {
+        await MiniKit.commandsAsync.sendHapticFeedback({
+          hapticsType: 'notification',
+          style,
+        });
+      } catch (err) {
+        console.warn('No se pudo enviar feedback háptico de pago', err);
+      }
+    },
+    [hapticsEnabled],
+  );
 
   useEffect(() => {
     if (error && errorRef.current) {
@@ -36,6 +55,7 @@ export default function TournamentBuyInPage() {
     try {
       if (mode === 'quick') {
         await payForQuickMatch();
+        await sendPaymentHaptics('success');
         router.push('/game');
         return;
       }
@@ -48,10 +68,12 @@ export default function TournamentBuyInPage() {
       }
 
       await payForTournament(selectedToken, amount, BUY_IN_DEMO_TOURNAMENT);
+      await sendPaymentHaptics('success');
       router.push('/tournament/registro');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error inesperado al procesar el pago';
       setError(message);
+      void sendPaymentHaptics('error');
     } finally {
       setIsPaying(false);
     }
@@ -112,7 +134,7 @@ export default function TournamentBuyInPage() {
             <label className="text-sm font-medium" id="token-label">
               Token
             </label>
-            <div className="flex flex-wrap gap-2">
+            <div className="grid grid-cols-2 gap-2" data-testid="token-grid">
               {Object.entries(SUPPORTED_TOKENS).map(([key, config]) => (
                 <button
                   key={key}
@@ -201,7 +223,7 @@ export default function TournamentBuyInPage() {
         type="button"
         onClick={handlePayment}
         disabled={isPaying}
-        className="rounded-lg bg-blue-600 px-4 py-3 text-white transition hover:bg-blue-700 disabled:opacity-60"
+        className="w-full rounded-lg bg-blue-600 px-4 py-3 text-white transition hover:bg-blue-700 disabled:opacity-60"
         aria-busy={isPaying}
       >
         {isPaying ? 'Procesando...' : mode === 'quick' ? 'Pagar y Jugar (1 WLD)' : 'Pagar e Inscribirse'}
