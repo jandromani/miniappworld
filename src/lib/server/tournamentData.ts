@@ -17,7 +17,11 @@ import { normalizeTokenIdentifier } from '../tokenNormalization';
 
 let seeded = false;
 
-function resolveTournamentStatus(startTime: Date, endTime: Date): Tournament['status'] {
+function resolveTournamentStatus(record: TournamentRecord): Tournament['status'] {
+  if (record.status === 'finished') return 'finished';
+
+  const startTime = new Date(record.start_time);
+  const endTime = new Date(record.end_time);
   const now = new Date();
 
   if (now < startTime) return 'upcoming';
@@ -25,9 +29,45 @@ function resolveTournamentStatus(startTime: Date, endTime: Date): Tournament['st
   return 'finished';
 }
 
-function toTournamentModel(record: TournamentRecord, currentPlayers: number): Tournament {
+async function finalizeTournament(record: TournamentRecord): Promise<TournamentRecord> {
+  const currentStatus = resolveTournamentStatus(record);
+
+  if (currentStatus !== 'finished' || record.status === 'finished') {
+    return { ...record, status: currentStatus };
+  }
+
+  const results = await listTournamentResults(record.tournament_id);
+
+  await Promise.all(
+    results.map((entry, index) => {
+      const prize =
+        index < record.prize_distribution.length
+          ? calculatePrizeAmount(record.prize_pool, record.prize_distribution[index])
+          : entry.prize;
+
+      if (prize === entry.prize) return entry;
+
+      return upsertTournamentResult(
+        {
+          tournament_id: entry.tournament_id,
+          user_id: entry.user_id,
+          score: entry.score,
+          prize,
+        },
+        { userId: entry.user_id }
+      );
+    })
+  );
+
+  const finishedRecord: TournamentRecord = { ...record, status: 'finished' };
+  await recordTournament(finishedRecord);
+  return finishedRecord;
+}
+
+async function toTournamentModel(record: TournamentRecord, currentPlayers: number): Promise<Tournament> {
   const startTime = new Date(record.start_time);
   const endTime = new Date(record.end_time);
+  const status = resolveTournamentStatus(record);
   return {
     tournamentId: record.tournament_id,
     name: record.name,
@@ -39,7 +79,7 @@ function toTournamentModel(record: TournamentRecord, currentPlayers: number): To
     currentPlayers,
     startTime,
     endTime,
-    status: resolveTournamentStatus(startTime, endTime),
+    status,
     prizeDistribution: record.prize_distribution,
   };
 }
@@ -108,10 +148,13 @@ export async function serializeTournament(tournament: Tournament) {
 async function toTournamentList(statusFilters?: string[]) {
   await seedTournaments();
   const records = await listTournamentRecords();
-  const participants = await Promise.all(records.map((entry) => listTournamentParticipants(entry.tournament_id)));
+  const finalizedRecords = await Promise.all(records.map((record) => finalizeTournament(record)));
+  const participants = await Promise.all(
+    finalizedRecords.map((entry) => listTournamentParticipants(entry.tournament_id))
+  );
 
-  const tournaments = records.map((record, index) =>
-    toTournamentModel(record, participants[index]?.length ?? 0)
+  const tournaments = await Promise.all(
+    finalizedRecords.map((record, index) => toTournamentModel(record, participants[index]?.length ?? 0))
   );
 
   if (!statusFilters?.length) return tournaments;
@@ -130,8 +173,9 @@ export async function getTournament(tournamentId: string): Promise<Tournament | 
   const record = await findTournamentRecord(tournamentId);
   if (!record) return null;
 
+  const finalizedRecord = await finalizeTournament(record);
   const participants = await listTournamentParticipants(tournamentId);
-  return toTournamentModel(record, participants.length);
+  return toTournamentModel(finalizedRecord, participants.length);
 }
 
 export async function getLeaderboardEntries(
