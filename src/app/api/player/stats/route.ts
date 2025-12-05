@@ -1,18 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { findWorldIdVerificationBySession } from '@/lib/database';
+import { requireActiveSession } from '@/lib/sessionValidation';
 import { getPlayerStats } from '@/lib/server/playerStatsStore';
 
 export async function GET(req: NextRequest) {
-  const session = req.cookies.get('session_token');
+  const sessionResult = await requireActiveSession(req, { path: 'player/stats' });
 
-  if (!session) {
-    return NextResponse.json({ error: 'Usuario no verificado' }, { status: 401 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
 
-  const identity = await findWorldIdVerificationBySession(session.value);
-  if (!identity) {
-    return NextResponse.json({ error: 'Sesión expirada o inválida' }, { status: 401 });
-  }
+  const { identity } = sessionResult;
 
   try {
     const stats = await getPlayerStats(identity.user_id);

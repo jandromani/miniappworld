@@ -3,7 +3,6 @@ import { MiniAppPaymentSuccessPayload } from '@worldcoin/minikit-js';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import {
   findPaymentByReference,
-  findWorldIdVerificationBySession,
   isLocalStorageDisabled,
   PaymentRecord,
   recordAuditEvent,
@@ -17,6 +16,7 @@ import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 import { recordApiFailureMetric } from '@/lib/metrics';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
+import { requireActiveSession } from '@/lib/sessionValidation';
 
 const PATH = 'confirm-payment';
 
@@ -127,9 +127,6 @@ export async function POST(req: NextRequest) {
     const body = (await req.json()) as { payload?: MiniAppPaymentSuccessPayload; reference?: string };
     const payload = body?.payload;
     const reference = body?.reference;
-
-    const sessionToken = req.cookies.get('session_token')?.value;
-    const sessionId = sessionToken;
 
     const originCheck = validateSameOrigin(req);
 
