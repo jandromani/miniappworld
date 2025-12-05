@@ -6,7 +6,11 @@ import {
   recordAuditEvent,
 } from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
-import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import {
+  isSupportedTokenAddress,
+  isSupportedTokenSymbol,
+  normalizeTokenIdentifier,
+} from '@/lib/tokenNormalization';
 
 const SESSION_COOKIE = 'session_token';
 
@@ -126,12 +130,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, reference, tournamentId: existingPayment.tournament_id });
   }
 
+  if (token && typeof token !== 'string') {
+    return NextResponse.json({ success: false, message: 'Token inválido' }, { status: 400 });
+  }
+
+  if (token && !isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token)) {
+    return NextResponse.json({ success: false, message: 'Token no soportado' }, { status: 400 });
+  }
+
   const normalizedToken = token
     ? normalizeTokenIdentifier(token)
     : normalizeTokenIdentifier(SUPPORTED_TOKENS.WLD.address);
   const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
   const decimals = SUPPORTED_TOKENS[tokenKey].decimals;
-  const tokenAmount = amount !== undefined ? BigInt(Math.round(Number(amount) * 10 ** decimals)).toString() : '0';
+  const numericAmount = Number(amount);
+
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return NextResponse.json({ success: false, message: 'El monto debe ser un número positivo' }, { status: 400 });
+  }
+
+  const tokenAmount = BigInt(Math.round(numericAmount * 10 ** decimals)).toString();
 
   await createPaymentRecord({
     reference,
