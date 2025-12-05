@@ -12,6 +12,7 @@ export type WorldIdVerificationRecord = {
   merkle_root?: string;
   verification_level?: string;
   user_id: string;
+  session_token: string;
   created_at: string;
 };
 
@@ -30,6 +31,8 @@ export type PaymentRecord = {
   updated_at: string;
   confirmed_at?: string;
   wallet_address?: string;
+  nullifier_hash?: string;
+  session_token?: string;
 };
 
 export type PaymentStatusHistoryRecord = {
@@ -294,6 +297,11 @@ export async function insertWorldIdVerification(
   });
 
   return entry;
+}
+
+export async function findWorldIdVerificationBySession(session_token: string) {
+  const db = await readDb();
+  return db.world_id_verifications.find((record) => record.session_token === session_token);
 }
 
 export async function createPaymentRecord(

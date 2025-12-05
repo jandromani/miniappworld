@@ -1,12 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createPaymentRecord, findPaymentByReference } from '@/lib/database';
+import {
+  createPaymentRecord,
+  findPaymentByReference,
+  findWorldIdVerificationBySession,
+} from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 
+const SESSION_COOKIE = 'session_token';
+
 export async function POST(req: NextRequest) {
   const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
-  const userId = req.headers.get('x-user-id') ?? bodyUserId ?? 'anonymous';
-  const sessionId = req.headers.get('x-session-id') ?? req.cookies.get('session_token')?.value ?? undefined;
+  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+
+  if (!sessionToken) {
+    return NextResponse.json(
+      { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
+      { status: 401 }
+    );
+  }
+
+  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+
+  if (!sessionIdentity) {
+    return NextResponse.json(
+      { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
+      { status: 401 }
+    );
+  }
+
+  if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
+    return NextResponse.json(
+      { success: false, message: 'El usuario enviado no coincide con la sesión activa' },
+      { status: 403 }
+    );
+  }
+
+  const userId = sessionIdentity.user_id;
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -32,6 +62,19 @@ export async function POST(req: NextRequest) {
   const existingPayment = await findPaymentByReference(reference);
 
   if (existingPayment) {
+    const sameUser = !existingPayment.user_id || existingPayment.user_id === verifiedUserId;
+    const sameWallet =
+      !existingPayment.wallet_address || !verifiedWalletAddress
+        ? true
+        : existingPayment.wallet_address.toLowerCase() === verifiedWalletAddress.toLowerCase();
+
+    if (!sameUser || !sameWallet) {
+      return NextResponse.json(
+        { success: false, message: 'La referencia ya fue utilizada por otro usuario' },
+        { status: 403 }
+      );
+    }
+
     return NextResponse.json({ success: true, reference, tournamentId: existingPayment.tournament_id });
   }
 
@@ -49,9 +92,11 @@ export async function POST(req: NextRequest) {
     token_amount: tokenAmount,
     tournament_id: tournamentId,
     recipient_address: process.env.NEXT_PUBLIC_RECEIVER_ADDRESS,
-    user_id: userId,
-    wallet_address: walletAddress,
-  }, { userId, sessionId });
+    user_id: verifiedUserId,
+    wallet_address: verifiedWalletAddress,
+    nullifier_hash: verifiedIdentity?.nullifier_hash,
+    session_token: sessionToken,
+  });
 
   console.log('Pago iniciado:', { reference, type, token, amount, tournamentId });
 
