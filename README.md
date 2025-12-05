@@ -48,6 +48,12 @@ npm run start
 - Todas las entradas de auditoría y logs de API se pseudonimizan (hash SHA-256 con `LOG_HASH_SECRET`) para evitar exponer IDs de usuario, wallets, tokens o referencias sensibles.
 - Puedes cifrar en reposo el archivo `data/database.json` habilitando `DATA_ENCRYPTION_KEY` (AES-256-GCM). Si usas un backend gestionado, considera migrar el almacenamiento local a una base de datos segura (PostgreSQL/Redis) y mantener `DISABLE_LOCAL_STATE=true` para evitar escribir a disco.
 
+## Migración a bases de datos transaccionales
+
+- El almacenamiento local con journaling y watchdog de locks está pensado para entornos de desarrollo o despliegues pequeños. Para producción, evalúa migrar a una base transaccional (PostgreSQL/Redis) que gestione concurrencia y durabilidad.
+- Configura `DB_DIALECT=postgres` o `DB_DIALECT=redis` junto con tus credenciales para preparar la transición; el código usa esta señal para ajustar niveles de aislamiento y tiempos de espera.
+- Cuando delegues el estado a una base gestionada, define `DISABLE_LOCAL_STATE=true` para evitar escrituras en disco y asegurar compatibilidad con réplicas sin almacenamiento local. Mantén `STATE_DIRECTORY` apuntando a un volumen efímero solo si necesitas un respaldo puntual en el entorno actual.
+
 ## Configuración de MiniKit
 Define en `.env`:
 - `APP_ID` y `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
