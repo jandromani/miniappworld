@@ -51,6 +51,36 @@ function useTournamentData(tournamentId: string) {
     load();
   }, [tournamentId]);
 
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const connectSse = () => {
+      eventSource?.close();
+      eventSource = new EventSource(`/api/tournaments/${tournamentId}/leaderboard/stream`);
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data) as LeaderboardEntry[];
+        setLeaderboard(data.slice(0, 10));
+        setError(null);
+      };
+
+      eventSource.onerror = () => {
+        setError((current) => current ?? 'Conexión en vivo interrumpida, reintentando...');
+        eventSource?.close();
+        if (retryTimeout) clearTimeout(retryTimeout);
+        retryTimeout = setTimeout(connectSse, 4000);
+      };
+    };
+
+    connectSse();
+
+    return () => {
+      eventSource?.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
+  }, [tournamentId]);
+
   return { tournament, leaderboard, loading, error };
 }
 
