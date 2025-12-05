@@ -3,12 +3,16 @@
 import { useEffect, useState } from 'react';
 import { MiniKit, VerificationLevel } from '@worldcoin/minikit-js';
 import { useRouter } from 'next/navigation';
+import { DEFAULT_WORLD_ID_ACTION, isValidWorldIdAction } from '@/lib/worldId';
 
 export default function Home() {
   const router = useRouter();
   const [userId, setUserId] = useState<string | null>(null);
   const [hasSession, setHasSession] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+  const worldIdAction = isValidWorldIdAction(DEFAULT_WORLD_ID_ACTION)
+    ? DEFAULT_WORLD_ID_ACTION
+    : 'trivia_game_access';
 
   const getSessionFromCookies = () => {
     if (typeof document === 'undefined') return null;
@@ -37,7 +41,7 @@ export default function Home() {
     setIsVerifying(true);
     try {
       const { finalPayload } = await MiniKit.commandsAsync.verify({
-        action: 'trivia_game_access',
+        action: worldIdAction,
         verification_level: VerificationLevel.Orb,
       });
 
@@ -51,6 +55,8 @@ export default function Home() {
             proof: finalPayload.proof,
             nullifier_hash: finalPayload.nullifier_hash,
             merkle_root: finalPayload.merkle_root,
+            action: worldIdAction,
+            verification_level: finalPayload.verification_level,
           }),
         });
 
