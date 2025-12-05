@@ -159,6 +159,17 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: validation.message }, { status: 400 });
   }
 
+  const refreshedTournament = await getTournament(tournament.tournamentId);
+
+  if (!refreshedTournament) {
+    return NextResponse.json({ error: 'Torneo no encontrado' }, { status: 404 });
+  }
+
+  if (refreshedTournament.currentPlayers >= refreshedTournament.maxPlayers) {
+    return NextResponse.json({ error: 'No hay cupos disponibles' }, { status: 400 });
+  }
+
+  await addParticipantRecord(tournament.tournamentId, userId, paymentReference);
   const participantWallet = walletAddress ?? worldId.wallet_address ?? payment.wallet_address;
 
   await addParticipantRecord(tournament.tournamentId, userId, paymentReference, participantWallet);
