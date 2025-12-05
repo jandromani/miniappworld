@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { findWorldIdVerificationBySession, recordAuditEvent, upsertGameProgress } from '@/lib/database';
+import { validateCsrf } from '@/lib/security';
 
 const SESSION_COOKIE = 'session_token';
 
 export async function POST(req: NextRequest) {
   const { sessionId, score, correctAnswers, totalQuestions, mode, tournamentId } = await req.json();
+  const csrfCheck = validateCsrf(req);
+  if (!csrfCheck.valid) {
+    return NextResponse.json({ error: 'CSRF inválido' }, { status: 403 });
+  }
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
   if (!sessionToken) {

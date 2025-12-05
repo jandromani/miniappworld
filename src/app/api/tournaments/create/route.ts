@@ -4,6 +4,8 @@ import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import { MEMECOIN_CONFIG, USDC_ADDRESS, WLD_ADDRESS } from '@/lib/constants';
 import { findWorldIdVerificationBySession, recordAuditEvent, recordTournament } from '@/lib/database';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import { validateCsrf, validateSameOrigin } from '@/lib/security';
+import { validateUserText } from '@/lib/validation';
 
 const SUPPORTED_ADDRESSES = [
   WLD_ADDRESS.toLowerCase(),
@@ -19,6 +21,20 @@ const MAX_DURATION_MS = 1000 * 60 * 60 * 24 * 30; // 30 días
 
 export async function POST(req: NextRequest) {
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+
+  const originCheck = validateSameOrigin(req);
+  const csrfCheck = validateCsrf(req);
+
+  if (!originCheck.valid || !csrfCheck.valid) {
+    await recordAuditEvent({
+      action: 'create_tournament',
+      entity: 'tournaments',
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: originCheck.valid ? csrfCheck.reason : originCheck.reason },
+    });
+    return NextResponse.json({ error: 'Solicitud no autorizada' }, { status: 403 });
+  }
 
   if (!sessionToken) {
     await recordAuditEvent({
@@ -53,7 +69,12 @@ export async function POST(req: NextRequest) {
     prizeDistribution,
   } = await req.json();
 
-  if (!name || !buyInToken || !buyInAmount || !maxPlayers || !startTime || !endTime || !prizeDistribution) {
+  const validatedName = validateUserText(name, { field: 'El nombre', min: 3, max: 64 });
+  if (!validatedName.valid || !validatedName.sanitized) {
+    return NextResponse.json({ error: validatedName.error }, { status: 400 });
+  }
+
+  if (!buyInToken || !buyInAmount || !maxPlayers || !startTime || !endTime || !prizeDistribution) {
     return apiErrorResponse('INVALID_PAYLOAD', {
       message: 'Missing required fields',
       path: 'tournaments/create',
@@ -93,7 +114,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Prize distribution exceeds expected winners' }, { status: 400 });
   }
 
-  const lowerBuyIn = String(buyInToken).toLowerCase();
   if (!SUPPORTED_ADDRESSES.includes(lowerBuyIn)) {
     return apiErrorResponse('UNSUPPORTED_TOKEN', {
       message: 'Token not supported',
@@ -115,9 +135,11 @@ export async function POST(req: NextRequest) {
   logApiEvent('info', {
     path: 'tournaments/create',
     action: 'create',
-    tournamentName: name,
+    tournamentName: validatedName.sanitized,
     buyInToken,
     maxPlayers,
+  });
+
   let normalizedBuyInAmount: bigint;
   try {
     normalizedBuyInAmount = BigInt(buyInAmount);
@@ -157,7 +179,7 @@ export async function POST(req: NextRequest) {
 
   await recordTournament({
     tournament_id: tournamentId,
-    name,
+    name: validatedName.sanitized,
     buy_in_token: lowerBuyIn,
     accepted_tokens: normalizedAccepted,
     buy_in_amount: normalizedBuyInAmount.toString(),
@@ -188,7 +210,7 @@ export async function POST(req: NextRequest) {
     success: true,
     tournament: {
       tournamentId,
-      name,
+      name: validatedName.sanitized,
       buyInToken: lowerBuyIn,
       buyInAmount: normalizedBuyInAmount.toString(),
       maxPlayers,
@@ -199,5 +221,5 @@ export async function POST(req: NextRequest) {
       status: 'upcoming',
       prizePool: '0',
     },
-  }, { status: 201 });
+  });
 }
