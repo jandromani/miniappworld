@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { LeaderboardEntry, Tournament } from '@/lib/types';
+import { sanitizeText } from '@/lib/sanitize';
 import {
   getTournamentDetails,
   getTournamentLeaderboard,
@@ -285,7 +286,7 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
                       className={entry.isCurrentUser ? 'bg-blue-50 font-semibold' : ''}
                     >
                       <td className="py-2 pr-2">{entry.rank}</td>
-                      <td className="py-2 pr-2">{entry.username}</td>
+                      <td className="py-2 pr-2">{sanitizeText(entry.username) || 'Usuario'}</td>
                       <td className="py-2 pr-2">{entry.score}</td>
                       <td className="py-2 pr-2">
                         {entry.prize ? formatToken(entry.prize, tournament.buyInToken) : '-'}

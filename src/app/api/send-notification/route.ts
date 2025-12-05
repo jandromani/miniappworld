@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import { validateSameOrigin } from '@/lib/security';
 import { createRateLimiter } from '@/lib/rateLimit';
@@ -290,6 +291,21 @@ export async function POST(req: NextRequest) {
 
   const { walletAddresses, title, message, miniAppPath } = body;
 
+  const sanitizedTitle = sanitizeText(title);
+  const sanitizedMessage = sanitizeText(message);
+  const sanitizedMiniAppPath = sanitizeText(miniAppPath);
+
+  if (!sanitizedTitle || !sanitizedMessage || !sanitizedMiniAppPath) {
+    logAudit({
+      apiKey: providedKey,
+      walletCount: Array.isArray(body?.walletAddresses) ? body.walletAddresses.length : 0,
+      clientIp,
+      success: false,
+      reason: 'sanitization_failed',
+    });
+    return NextResponse.json(
+      { success: false, message: 'Los campos title, message y miniAppPath deben contener texto válido' },
+      { status: 400 }
   if (!isNonceValid(body.nonce)) {
     logAudit({
       apiKey: providedKey,
@@ -319,16 +335,16 @@ export async function POST(req: NextRequest) {
         localisations: [
           {
             language: 'en',
-            title,
-            message,
+            title: sanitizedTitle,
+            message: sanitizedMessage,
           },
           {
             language: 'es',
-            title,
-            message,
+            title: sanitizedTitle,
+            message: sanitizedMessage,
           },
         ],
-        mini_app_path: miniAppPath,
+        mini_app_path: sanitizedMiniAppPath,
       }),
     });
 
