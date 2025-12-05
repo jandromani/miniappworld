@@ -48,13 +48,13 @@ export async function joinTournament(
     throw new Error('Debes verificar tu identidad antes de unirte al torneo');
   }
 
-  await payForTournament(token, amount, tournamentId);
+  const payment = await payForTournament(token, amount, tournamentId);
 
   const response = await fetch(`${BASE_PATH}/${tournamentId}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
-    body: JSON.stringify({ token, amount, userId }),
+    body: JSON.stringify({ token, amount, userId, paymentReference: payment.reference }),
   });
 
   await handleResponse<void>(response);

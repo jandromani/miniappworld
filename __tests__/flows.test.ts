@@ -46,7 +46,7 @@ describe('Flujos Verify + Pay + Join', () => {
       Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
     );
     (global.fetch as jest.Mock).mockImplementationOnce(() =>
-      Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true }) })
+      Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true, reference: 'ref-999' }) })
     );
 
     const verifyPayload = await verifyWorldID('trivia_game_access');
@@ -54,7 +54,7 @@ describe('Flujos Verify + Pay + Join', () => {
     const join = await sendTransaction({ to: '0xjoin' });
 
     expect(verifyPayload.status).toBe('success');
-    expect(payment).toEqual({ success: true });
+    expect(payment).toEqual({ success: true, reference: 'ref-999' });
     expect(join).toEqual(expect.objectContaining({ status: 'success', tx_hash: '0xjoin' }));
   });
 

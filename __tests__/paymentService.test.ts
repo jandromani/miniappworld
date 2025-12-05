@@ -29,9 +29,11 @@ describe('paymentService', () => {
     } as any);
 
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({}));
-    (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({ success: true }));
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      createFetchResponse({ success: true, reference: 'ref-123', transactionId: 'tx-1' })
+    );
 
-    await expect(payForQuickMatch()).resolves.toEqual({ success: true });
+    await expect(payForQuickMatch()).resolves.toEqual({ success: true, reference: 'ref-123', transactionId: 'tx-1' });
 
     expect(payWithMiniKitMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -63,7 +65,9 @@ describe('paymentService', () => {
     } as any);
 
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({}));
-    (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({ success: true }));
+    (global.fetch as jest.Mock).mockImplementationOnce(() =>
+      createFetchResponse({ success: true, reference: 'ref-456', transactionId: 'tx-2' })
+    );
 
     await payForTournament('MEMECOIN', 5, 'demo-tournament');
 
