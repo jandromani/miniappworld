@@ -78,10 +78,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const verifiedWalletAddress = walletAddress ?? sessionIdentity.wallet_address;
+
+  if (
+    walletAddress &&
+    sessionIdentity.wallet_address &&
+    walletAddress.toLowerCase() !== sessionIdentity.wallet_address.toLowerCase()
+  ) {
+    return NextResponse.json(
+      { success: false, message: 'La wallet enviada no coincide con la sesión verificada' },
+      { status: 403 }
+    );
+  }
+
   const existingPayment = await findPaymentByReference(reference);
 
   if (existingPayment) {
-    const sameUser = !existingPayment.user_id || existingPayment.user_id === verifiedUserId;
+    const sameUser = !existingPayment.user_id || existingPayment.user_id === sessionIdentity.user_id;
     const sameWallet =
       !existingPayment.wallet_address || !verifiedWalletAddress
         ? true
@@ -111,9 +124,9 @@ export async function POST(req: NextRequest) {
     token_amount: tokenAmount,
     tournament_id: tournamentId,
     recipient_address: process.env.NEXT_PUBLIC_RECEIVER_ADDRESS,
-    user_id: verifiedUserId,
+    user_id: sessionIdentity.user_id,
     wallet_address: verifiedWalletAddress,
-    nullifier_hash: verifiedIdentity?.nullifier_hash,
+    nullifier_hash: sessionIdentity?.nullifier_hash,
     session_token: sessionToken,
   }, { userId: verifiedUserId, sessionId: sessionToken });
 
