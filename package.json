@@ -8,7 +8,11 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
-    "test:ci": "jest --runInBand"
+    "test:ci": "jest --runInBand",
+    "data:snapshot": "node scripts/dataSnapshots.js create",
+    "data:snapshot:list": "node scripts/dataSnapshots.js list",
+    "data:snapshot:restore": "node scripts/dataSnapshots.js restore",
+    "data:snapshot:verify": "node scripts/dataSnapshots.js verify"
   },
   "dependencies": {
     "@worldcoin/minikit-js": "^0.0.10",
