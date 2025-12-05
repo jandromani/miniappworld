@@ -7,8 +7,12 @@ import {
   recordAuditEvent,
   updatePaymentStatus,
 } from '@/lib/database';
+import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
+import { validateSameOrigin } from '@/lib/security';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
+import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 
 const PATH = 'confirm-payment';
 
@@ -18,10 +22,21 @@ function normalizeTokenAmount(value: unknown): bigint {
     throw new Error('Token amount inválido');
   }
 
-  return BigInt(asString);
+  const normalized = BigInt(asString);
+
+  if (normalized <= 0n) {
+    throw new Error('Token amount debe ser positivo');
+  }
+
+  return normalized;
 }
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const { payload, reference } = (await req.json()) as {
     payload: MiniAppPaymentSuccessPayload;
     reference: string;
@@ -30,11 +45,27 @@ export async function POST(req: NextRequest) {
   const sessionToken = req.cookies.get('session_token')?.value;
   const sessionId = sessionToken;
 
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    await recordAuditEvent({
+      action: 'confirm_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId,
+      status: 'error',
+      details: { reason: originCheck.reason },
+    });
+
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
+
   if (!sessionToken) {
     await recordAuditEvent({
       action: 'confirm_payment',
       entity: 'payments',
       entityId: reference,
+      sessionId,
       status: 'error',
       details: { reason: 'missing_session_token' },
     });
@@ -176,6 +207,10 @@ export async function POST(req: NextRequest) {
   const normalizedExpectedToken = storedPayment.token_address
     ? normalizeTokenIdentifier(storedPayment.token_address)
     : undefined;
+  const expectedTokenKey = normalizedExpectedToken
+    ? resolveTokenFromAddress(normalizedExpectedToken)
+    : null;
+  const amountTolerance = expectedTokenKey ? TOKEN_AMOUNT_TOLERANCE[expectedTokenKey] ?? 0n : 0n;
 
   if (storedPayment.session_token && storedPayment.session_token !== sessionToken) {
     await updatePaymentStatus(
@@ -277,7 +312,9 @@ export async function POST(req: NextRequest) {
 
   if (transactionAmount !== undefined && storedPayment.token_amount) {
     const expected = BigInt(storedPayment.token_amount);
-    if (expected !== transactionAmount) {
+    const difference = transactionAmount >= expected ? transactionAmount - expected : expected - transactionAmount;
+
+    if (difference > amountTolerance) {
       await updatePaymentStatus(
         reference,
         'failed',
@@ -368,13 +405,30 @@ export async function POST(req: NextRequest) {
       { userId: storedPayment.user_id, sessionId }
     );
 
+    if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
+      const tournament = await getTournament(storedPayment.tournament_id);
+      if (tournament) {
+        await incrementTournamentPool(tournament);
+      }
+    }
+
     if (storedPayment.wallet_address) {
-      await sendNotification({
+      const notificationResult = await sendNotification({
         walletAddresses: [storedPayment.wallet_address],
         title: 'Pago confirmado',
         message: 'Pago confirmado, ya puedes unirte al torneo',
-        miniAppPath: storedPayment.tournament_id ? `/tournament/${storedPayment.tournament_id}` : '/tournament',
+        miniAppPath: storedPayment.tournament_id
+          ? `/tournament/${storedPayment.tournament_id}`
+          : '/tournament',
       });
+
+      if (!notificationResult.success) {
+        console.error('No se pudo enviar la notificación de pago confirmado', {
+          reference,
+          walletAddress: storedPayment.wallet_address,
+          errorMessage: notificationResult.message,
+        });
+      }
     }
 
     logApiEvent('info', {

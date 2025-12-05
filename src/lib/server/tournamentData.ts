@@ -1,5 +1,5 @@
 import tournamentsConfig from '@/config/tournaments.json';
-import { SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
+import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import {
   addTournamentParticipant,
   findTournamentRecord,
@@ -141,7 +141,7 @@ export async function getLeaderboardEntries(
   await seedTournaments();
   const entries = await listTournamentResults(tournamentId);
 
-  return entries
+  const leaderboard = entries
     .slice()
     .sort((a, b) => b.score - a.score)
     .map((entry, index) => ({
@@ -152,6 +152,23 @@ export async function getLeaderboardEntries(
       score: entry.score,
       prize: index < distribution.length ? calculatePrizeAmount(prizePool, distribution[index]) : entry.prize,
     }));
+
+  await Promise.all(
+    leaderboard.map((entry) =>
+      upsertTournamentResult(
+        {
+          tournament_id: tournamentId,
+          user_id: entry.userId,
+          score: entry.score,
+          rank: entry.rank,
+          prize: entry.prize,
+        },
+        { skipUserValidation: true }
+      )
+    )
+  );
+
+  return leaderboard;
 }
 
 export async function appendLeaderboardEntry(tournamentId: string, entry: Omit<LeaderboardEntry, 'rank'>) {
@@ -181,6 +198,10 @@ export function validateTokenForTournament(
   token: SupportedToken,
   amount: number | string
 ): { valid: boolean; message?: string } {
+  if (tournament.status !== 'active') {
+    return { valid: false, message: 'El torneo no está activo' };
+  }
+
   const tokenConfig = SUPPORTED_TOKENS[token];
   if (!tokenConfig) return { valid: false, message: 'Token no soportado' };
 
@@ -192,8 +213,23 @@ export function validateTokenForTournament(
   }
 
   const normalizedAmount = typeof amount === 'string' ? amount : amount.toString();
-  const expected = BigInt(tournament.buyInAmount);
-  const incoming = BigInt(normalizedAmount);
+  const buyInTokenKey = resolveTokenFromAddress(normalizeTokenIdentifier(tournament.buyInToken));
+  const buyInDecimals = buyInTokenKey ? SUPPORTED_TOKENS[buyInTokenKey].decimals : 18;
+  const incomingDecimals = tokenConfig.decimals ?? 18;
+
+  const targetDecimals = Math.max(buyInDecimals, incomingDecimals);
+  const scaleAmount = (rawAmount: bigint, amountDecimals: number) => {
+    if (amountDecimals === targetDecimals) return rawAmount;
+    const multiplier = 10n ** BigInt(targetDecimals - amountDecimals);
+    return rawAmount * multiplier;
+  };
+
+  const expected = scaleAmount(BigInt(tournament.buyInAmount), buyInDecimals);
+  const incoming = scaleAmount(BigInt(normalizedAmount), incomingDecimals);
+
+  if (incoming <= 0n) {
+    return { valid: false, message: 'El monto debe ser un número positivo' };
+  }
 
   if (expected !== incoming) {
     return { valid: false, message: 'El buy-in no coincide con el monto requerido' };
@@ -202,7 +238,12 @@ export function validateTokenForTournament(
   return { valid: true };
 }
 
-export async function addParticipantRecord(tournamentId: string, userId: string, paymentReference: string) {
+export async function addParticipantRecord(
+  tournamentId: string,
+  userId: string,
+  paymentReference: string,
+  walletAddress?: string,
+) {
   await seedTournaments();
   await addTournamentParticipant({
     tournament_id: tournamentId,
@@ -210,7 +251,7 @@ export async function addParticipantRecord(tournamentId: string, userId: string,
     payment_reference: paymentReference,
     joined_at: new Date().toISOString(),
     status: 'joined',
-  }, { userId });
+  }, { userId }, { walletAddress });
 }
 
 export async function participantExists(tournamentId: string, userId: string) {
