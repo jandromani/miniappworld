@@ -6,11 +6,12 @@ import {
   MiniAppPaymentErrorPayload,
   MiniAppPaymentSuccessPayload,
 } from '@worldcoin/minikit-js';
+import type { WorldIdAction } from './worldId';
 
 /**
  * Verificar World ID (prueba de persona única)
  */
-export async function verifyWorldID(action: string) {
+export async function verifyWorldID(action: WorldIdAction) {
   if (!MiniKit.isInstalled()) {
     throw new Error('MiniKit no está instalado');
   }
