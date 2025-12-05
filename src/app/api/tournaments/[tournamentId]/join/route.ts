@@ -87,8 +87,27 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     return NextResponse.json({ error: 'El pago está asociado a otro torneo' }, { status: 400 });
   }
 
-  if (payment.user_id && payment.user_id !== userId) {
+  if (payment.session_token && payment.session_token !== sessionToken) {
+    return NextResponse.json({ error: 'La referencia de pago no pertenece a esta sesión' }, { status: 403 });
+  }
+
+  if (payment.user_id && payment.user_id !== worldId.user_id) {
     return NextResponse.json({ error: 'El pago pertenece a otro usuario' }, { status: 403 });
+  }
+
+  if (payment.nullifier_hash && payment.nullifier_hash !== worldId.nullifier_hash) {
+    return NextResponse.json({ error: 'La verificación de identidad no coincide con el pago' }, { status: 403 });
+  }
+
+  const paymentWallet = payment.wallet_address?.toLowerCase();
+  const verifiedWallet = worldId.wallet_address?.toLowerCase();
+
+  if (paymentWallet && verifiedWallet && paymentWallet !== verifiedWallet) {
+    return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
+  }
+
+  if (paymentWallet && walletAddress && paymentWallet !== walletAddress.toLowerCase()) {
+    return NextResponse.json({ error: 'La wallet proporcionada no coincide con el pago' }, { status: 403 });
   }
 
   const normalizedToken = normalizeTokenIdentifier(token);

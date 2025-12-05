@@ -31,6 +31,8 @@ export type PaymentRecord = {
   updated_at: string;
   confirmed_at?: string;
   wallet_address?: string;
+  nullifier_hash?: string;
+  session_token?: string;
 };
 
 export type PaymentStatusHistoryRecord = {
