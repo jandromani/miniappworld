@@ -348,12 +348,22 @@ export async function POST(req: NextRequest) {
     );
 
     if (storedPayment.wallet_address) {
-      await sendNotification({
+      const notificationResult = await sendNotification({
         walletAddresses: [storedPayment.wallet_address],
         title: 'Pago confirmado',
         message: 'Pago confirmado, ya puedes unirte al torneo',
-        miniAppPath: storedPayment.tournament_id ? `/tournament/${storedPayment.tournament_id}` : '/tournament',
+        miniAppPath: storedPayment.tournament_id
+          ? `/tournament/${storedPayment.tournament_id}`
+          : '/tournament',
       });
+
+      if (!notificationResult.success) {
+        console.error('No se pudo enviar la notificación de pago confirmado', {
+          reference,
+          walletAddress: storedPayment.wallet_address,
+          errorMessage: notificationResult.message,
+        });
+      }
     }
 
     return NextResponse.json({ success: true, message: 'Pago confirmado' });
