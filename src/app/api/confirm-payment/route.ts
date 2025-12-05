@@ -15,7 +15,13 @@ function normalizeTokenAmount(value: unknown): bigint {
     throw new Error('Token amount inválido');
   }
 
-  return BigInt(asString);
+  const normalized = BigInt(asString);
+
+  if (normalized <= 0n) {
+    throw new Error('Token amount debe ser positivo');
+  }
+
+  return normalized;
 }
 
 export async function POST(req: NextRequest) {

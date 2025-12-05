@@ -195,6 +195,10 @@ export function validateTokenForTournament(
   const expected = BigInt(tournament.buyInAmount);
   const incoming = BigInt(normalizedAmount);
 
+  if (incoming <= 0n) {
+    return { valid: false, message: 'El monto debe ser un número positivo' };
+  }
+
   if (expected !== incoming) {
     return { valid: false, message: 'El buy-in no coincide con el monto requerido' };
   }
