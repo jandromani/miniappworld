@@ -7,10 +7,16 @@ import {
   insertWorldIdVerification,
 } from '@/lib/database';
 import { DEFAULT_WORLD_ID_ACTION, isValidWorldIdAction, type WorldIdAction } from '@/lib/worldId';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
 
 const SESSION_COOKIE = 'session_token';
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   try {
     const { proof, nullifier_hash, merkle_root, wallet_address, user_id, action, verification_level } =
       await req.json();

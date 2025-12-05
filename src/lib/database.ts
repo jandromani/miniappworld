@@ -74,6 +74,20 @@ export type TournamentResultRecord = {
   prize?: string;
 };
 
+export type GameProgressRecord = {
+  progress_id: string;
+  session_id: string;
+  user_id: string;
+  mode: 'quick' | 'tournament';
+  tournament_id?: string;
+  score: number;
+  correct_answers: number;
+  total_questions: number;
+  session_token?: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type DatabaseShape = {
   world_id_verifications: WorldIdVerificationRecord[];
   payments: PaymentRecord[];
@@ -81,6 +95,7 @@ export type DatabaseShape = {
   tournaments: TournamentRecord[];
   tournament_participants: TournamentParticipantRecord[];
   tournament_results: TournamentResultRecord[];
+  game_progress: GameProgressRecord[];
 };
 
 const DB_PATH = path.join(process.cwd(), 'data', 'database.json');
@@ -88,7 +103,17 @@ const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
 const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
 const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
+const LOCK_MAX_AGE_MS = 10_000; // 10 segundos
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
+
+type CachedVerification = {
+  record: WorldIdVerificationRecord;
+  expiresAt: number;
+};
+
+const worldIdCacheByNullifier = new Map<string, CachedVerification>();
+const worldIdCacheBySession = new Map<string, CachedVerification>();
+const worldIdCacheByUser = new Map<string, CachedVerification>();
 
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
 export type AuditLogEntry = {
@@ -134,6 +159,24 @@ async function acquireLock(attempts = RETRY_ATTEMPTS): Promise<FileHandle> {
       lastError = error;
       if (code !== 'EEXIST' && code !== 'EACCES') {
         break;
+      }
+
+      try {
+        const stats = await fs.stat(LOCK_PATH);
+        const ageMs = Date.now() - stats.mtimeMs;
+
+        if (ageMs > LOCK_MAX_AGE_MS) {
+          console.warn(
+            `[database] Lockfile obsoleto detectado (edad: ${ageMs}ms). Intentando recuperación...`
+          );
+          await releaseLock();
+          continue;
+        }
+      } catch (statError) {
+        const statCode = (statError as NodeJS.ErrnoException).code;
+        if (statCode !== 'ENOENT') {
+          console.error('[database] No se pudo verificar la edad del lockfile', statError);
+        }
       }
 
       await delay(RETRY_DELAY_MS * (attempt + 1));
@@ -198,6 +241,7 @@ async function ensureDbFile(): Promise<void> {
         tournaments: [],
         tournament_participants: [],
         tournament_results: [],
+        game_progress: [],
       };
       await fs.writeFile(DB_PATH, JSON.stringify(emptyDb, null, 2), 'utf8');
     } else {
@@ -209,7 +253,16 @@ async function ensureDbFile(): Promise<void> {
 async function loadDb(): Promise<DatabaseShape> {
   await ensureDbFile();
   const content = await withRetries(() => fs.readFile(DB_PATH, 'utf8'));
-  return JSON.parse(content) as DatabaseShape;
+  const parsed = JSON.parse(content) as Partial<DatabaseShape>;
+  return {
+    world_id_verifications: parsed.world_id_verifications ?? [],
+    payments: parsed.payments ?? [],
+    payment_status_history: parsed.payment_status_history ?? [],
+    tournaments: parsed.tournaments ?? [],
+    tournament_participants: parsed.tournament_participants ?? [],
+    tournament_results: parsed.tournament_results ?? [],
+    game_progress: parsed.game_progress ?? [],
+  } satisfies DatabaseShape;
 }
 
 async function persistDb(db: DatabaseShape): Promise<void> {
@@ -234,6 +287,59 @@ function purgeExpiredWorldIdVerifications(db: DatabaseShape, now: number) {
   return before - db.world_id_verifications.length;
 }
 
+function cacheWorldIdVerification(record: WorldIdVerificationRecord) {
+  const expiresAt = new Date(record.expires_at ?? Date.now() + WORLD_ID_SESSION_TTL_MS).getTime();
+  const cached: CachedVerification = { record, expiresAt };
+
+  worldIdCacheByNullifier.set(record.nullifier_hash, cached);
+  worldIdCacheBySession.set(record.session_token, cached);
+  worldIdCacheByUser.set(record.user_id, cached);
+}
+
+function getCachedWorldIdVerification(
+  map: Map<string, CachedVerification>,
+  key: string,
+  now: number
+) {
+  const cached = map.get(key);
+  if (!cached) return undefined;
+
+  if (cached.expiresAt <= now) {
+    worldIdCacheByNullifier.delete(cached.record.nullifier_hash);
+    worldIdCacheBySession.delete(cached.record.session_token);
+    worldIdCacheByUser.delete(cached.record.user_id);
+    return undefined;
+  }
+
+  return cached.record;
+}
+
+function purgeWorldIdCaches(now: number) {
+  for (const [key, cached] of worldIdCacheByNullifier.entries()) {
+    if (cached.expiresAt <= now) {
+      worldIdCacheByNullifier.delete(key);
+      worldIdCacheBySession.delete(cached.record.session_token);
+      worldIdCacheByUser.delete(cached.record.user_id);
+    }
+  }
+
+  for (const [key, cached] of worldIdCacheBySession.entries()) {
+    if (cached.expiresAt <= now) {
+      worldIdCacheBySession.delete(key);
+      worldIdCacheByNullifier.delete(cached.record.nullifier_hash);
+      worldIdCacheByUser.delete(cached.record.user_id);
+    }
+  }
+
+  for (const [key, cached] of worldIdCacheByUser.entries()) {
+    if (cached.expiresAt <= now) {
+      worldIdCacheByUser.delete(key);
+      worldIdCacheByNullifier.delete(cached.record.nullifier_hash);
+      worldIdCacheBySession.delete(cached.record.session_token);
+    }
+  }
+}
+
 async function withWorldIdCleanupSnapshot<T>(
   operation: (db: DatabaseShape, now: number) => T | Promise<T>
 ): Promise<T> {
@@ -241,6 +347,7 @@ async function withWorldIdCleanupSnapshot<T>(
     const db = await loadDb();
     const now = Date.now();
     const removed = purgeExpiredWorldIdVerifications(db, now);
+    purgeWorldIdCaches(now);
     const result = await operation(db, now);
 
     if (removed > 0) {
@@ -256,6 +363,7 @@ export async function cleanupExpiredWorldIdVerifications(): Promise<number> {
     const db = await loadDb();
     const now = Date.now();
     const removed = purgeExpiredWorldIdVerifications(db, now);
+    purgeWorldIdCaches(now);
 
     if (removed > 0) {
       await persistDb(db);
@@ -291,30 +399,57 @@ function assertTournamentExists(db: DatabaseShape, tournamentId: string) {
   return tournament;
 }
 
-function assertUserExists(db: DatabaseShape, userId?: string, context?: AuditContext) {
+function assertUserExists(
+  db: DatabaseShape,
+  userId?: string,
+  context?: AuditContext,
+  walletAddress?: string,
+) {
   if (!userId || userId === 'anonymous' || context?.skipUserValidation) return;
 
   const now = Date.now();
-  const exists = db.world_id_verifications.some(
+  const record = db.world_id_verifications.find(
     (entry) => entry.user_id === userId && !isWorldIdVerificationExpired(entry, now)
   );
-  if (!exists) {
+
+  if (!record) {
     const error = new Error('User not found');
     (error as NodeJS.ErrnoException).code = 'USER_NOT_FOUND';
     throw error;
   }
+
+  if (walletAddress && record.wallet_address) {
+    const matches = walletAddress.toLowerCase() === record.wallet_address.toLowerCase();
+    if (!matches) {
+      const error = new Error('User wallet does not match registered wallet');
+      (error as NodeJS.ErrnoException).code = 'USER_WALLET_MISMATCH';
+      throw error;
+    }
+  }
 }
 
 export async function findWorldIdVerificationByNullifier(nullifier_hash: string) {
-  return withWorldIdCleanupSnapshot((db) =>
-    db.world_id_verifications.find((record) => record.nullifier_hash === nullifier_hash)
-  );
+  return withWorldIdCleanupSnapshot((db, now) => {
+    const cached = getCachedWorldIdVerification(worldIdCacheByNullifier, nullifier_hash, now);
+    if (cached) return cached;
+
+    const record = db.world_id_verifications.find((entry) => entry.nullifier_hash === nullifier_hash);
+    if (record) cacheWorldIdVerification(record);
+
+    return record;
+  });
 }
 
 export async function findWorldIdVerificationByUser(user_id: string) {
-  return withWorldIdCleanupSnapshot((db) =>
-    db.world_id_verifications.find((record) => record.user_id === user_id)
-  );
+  return withWorldIdCleanupSnapshot((db, now) => {
+    const cached = getCachedWorldIdVerification(worldIdCacheByUser, user_id, now);
+    if (cached) return cached;
+
+    const record = db.world_id_verifications.find((entry) => entry.user_id === user_id);
+    if (record) cacheWorldIdVerification(record);
+
+    return record;
+  });
 }
 
 export async function insertWorldIdVerification(
@@ -342,6 +477,7 @@ export async function insertWorldIdVerification(
     };
 
     db.world_id_verifications.push(created);
+    cacheWorldIdVerification(created);
     return created;
   });
 
@@ -359,9 +495,55 @@ export async function insertWorldIdVerification(
 }
 
 export async function findWorldIdVerificationBySession(session_token: string) {
-  return withWorldIdCleanupSnapshot((db) =>
-    db.world_id_verifications.find((record) => record.session_token === session_token)
-  );
+  return withWorldIdCleanupSnapshot((db, now) => {
+    const cached = getCachedWorldIdVerification(worldIdCacheBySession, session_token, now);
+    if (cached) return cached;
+
+    const record = db.world_id_verifications.find((entry) => entry.session_token === session_token);
+    if (record) cacheWorldIdVerification(record);
+
+    return record;
+  });
+}
+
+export async function updateWorldIdWallet(
+  user_id: string,
+  wallet_address: string,
+  context: AuditContext = {}
+): Promise<WorldIdVerificationRecord> {
+  const updatedRecord = await withDbTransaction(async (db) => {
+    const now = Date.now();
+    purgeExpiredWorldIdVerifications(db, now);
+
+    const recordIndex = db.world_id_verifications.findIndex(
+      (record) => record.user_id === user_id && !isWorldIdVerificationExpired(record, now)
+    );
+
+    if (recordIndex === -1) {
+      const error = new Error('World ID verification not found for user');
+      (error as NodeJS.ErrnoException).code = 'USER_NOT_FOUND';
+      throw error;
+    }
+
+    const record = db.world_id_verifications[recordIndex];
+    const updated: WorldIdVerificationRecord = { ...record, wallet_address };
+    db.world_id_verifications[recordIndex] = updated;
+
+    return updated;
+  });
+
+  await appendAuditLog({
+    action: 'update_world_id_wallet',
+    entity: 'world_id_verifications',
+    entityId: updatedRecord.nullifier_hash,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: { wallet_address },
+  });
+
+  return updatedRecord;
 }
 
 export async function createPaymentRecord(
@@ -379,7 +561,7 @@ export async function createPaymentRecord(
       assertTournamentExists(db, record.tournament_id);
     }
 
-    assertUserExists(db, record.user_id, context);
+    assertUserExists(db, record.user_id, context, record.wallet_address);
 
     const created: PaymentRecord = {
       ...record,
@@ -514,11 +696,12 @@ export async function updateTournamentRecord(tournament: TournamentRecord): Prom
 
 export async function addTournamentParticipant(
   participant: TournamentParticipantRecord,
-  context: AuditContext = {}
+  context: AuditContext = {},
+  options: { walletAddress?: string } = {}
 ): Promise<TournamentParticipantRecord> {
   const entry = await withDbTransaction(async (db) => {
     assertTournamentExists(db, participant.tournament_id);
-    assertUserExists(db, participant.user_id, context);
+    assertUserExists(db, participant.user_id, context, options.walletAddress);
 
     const exists = db.tournament_participants.find(
       (item) => item.tournament_id === participant.tournament_id && item.user_id === participant.user_id
@@ -589,6 +772,60 @@ export async function listTournamentResults(tournamentId: string): Promise<Tourn
   return withDbSnapshot((db) =>
     db.tournament_results.filter((entry) => entry.tournament_id === tournamentId)
   );
+}
+
+export async function upsertGameProgress(
+  record: Omit<GameProgressRecord, 'progress_id' | 'created_at' | 'updated_at'>,
+  context: AuditContext = {}
+): Promise<GameProgressRecord> {
+  const entry = await withDbTransaction(async (db) => {
+    assertUserExists(db, record.user_id, context);
+
+    const now = new Date().toISOString();
+    const existingIndex = db.game_progress.findIndex(
+      (item) => item.session_id === record.session_id && item.user_id === record.user_id
+    );
+
+    if (existingIndex >= 0) {
+      const updated: GameProgressRecord = {
+        ...db.game_progress[existingIndex],
+        ...record,
+        updated_at: now,
+      };
+      db.game_progress[existingIndex] = updated;
+      return updated;
+    }
+
+    const created: GameProgressRecord = {
+      ...record,
+      progress_id: randomUUID(),
+      created_at: now,
+      updated_at: now,
+    };
+    db.game_progress.push(created);
+    return created;
+  });
+
+  await appendAuditLog({
+    action: 'upsert_game_progress',
+    entity: 'game_progress',
+    entityId: entry.progress_id,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? entry.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: {
+      mode: entry.mode,
+      score: entry.score,
+      tournamentId: entry.tournament_id,
+    },
+  });
+
+  return entry;
+}
+
+export async function listGameProgressByUser(userId: string): Promise<GameProgressRecord[]> {
+  return withDbSnapshot((db) => db.game_progress.filter((entry) => entry.user_id === userId));
 }
 
 export async function normalizeTournamentRecord(record: TournamentRecord): TournamentRecord {
