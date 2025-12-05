@@ -52,6 +52,36 @@ function useTournamentData(tournamentId: string) {
     load();
   }, [tournamentId]);
 
+  useEffect(() => {
+    let eventSource: EventSource | null = null;
+    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const connectSse = () => {
+      eventSource?.close();
+      eventSource = new EventSource(`/api/tournaments/${tournamentId}/leaderboard/stream`);
+
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data) as LeaderboardEntry[];
+        setLeaderboard(data.slice(0, 10));
+        setError(null);
+      };
+
+      eventSource.onerror = () => {
+        setError((current) => current ?? 'Conexión en vivo interrumpida, reintentando...');
+        eventSource?.close();
+        if (retryTimeout) clearTimeout(retryTimeout);
+        retryTimeout = setTimeout(connectSse, 4000);
+      };
+    };
+
+    connectSse();
+
+    return () => {
+      eventSource?.close();
+      if (retryTimeout) clearTimeout(retryTimeout);
+    };
+  }, [tournamentId]);
+
   return { tournament, leaderboard, loading, error };
 }
 
@@ -80,10 +110,16 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
     setSelectedToken(preferredToken ?? acceptedTokens[0] ?? null);
   }, [acceptedTokens, tournament]);
 
-  const canJoin = useMemo(
-    () => tournament?.status === 'upcoming' && !joining && !!selectedToken,
-    [tournament?.status, joining, selectedToken]
-  );
+  const canJoin = useMemo(() => {
+    if (!tournament) return false;
+
+    return (
+      tournament.status === 'active' &&
+      tournament.currentPlayers < tournament.maxPlayers &&
+      !joining &&
+      !!selectedToken
+    );
+  }, [joining, selectedToken, tournament]);
 
   const canPlay = useMemo(
     () => tournament?.status === 'active' && (hasJoined || !!leaderboard.find((e) => e.isCurrentUser)),
