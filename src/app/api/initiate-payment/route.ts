@@ -8,6 +8,7 @@ import {
 } from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import {
   isSupportedTokenAddress,
@@ -25,6 +26,21 @@ export async function POST(req: NextRequest) {
 
   const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    await recordAuditEvent({
+      action: 'initiate_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: originCheck.reason },
+    });
+
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
 
   if (!sessionToken) {
     await recordAuditEvent({

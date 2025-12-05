@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { validateSameOrigin } from '@/lib/security';
 import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
@@ -122,6 +123,15 @@ export async function POST(req: NextRequest) {
   const authResult = await authenticate(req);
   const providedKey = authResult.providedKey;
 
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: originCheck.reason });
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
+
+  if (!isAuthenticated(req)) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'auth_failed' });
   if (!authResult.authorized || !providedKey) {
     await logAudit({
       apiKey: providedKey,

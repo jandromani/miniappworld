@@ -9,6 +9,7 @@ import {
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
+import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 
@@ -40,6 +41,21 @@ export async function POST(req: NextRequest) {
 
   const sessionToken = req.cookies.get('session_token')?.value;
   const sessionId = sessionToken;
+
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    await recordAuditEvent({
+      action: 'confirm_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId,
+      status: 'error',
+      details: { reason: originCheck.reason },
+    });
+
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
 
   if (!sessionToken) {
     await recordAuditEvent({
