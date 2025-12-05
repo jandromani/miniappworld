@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
       action: 'confirm_payment',
       entity: 'payments',
       entityId: reference,
+      sessionId,
       status: 'error',
       details: { reason: 'missing_session_token' },
     });
