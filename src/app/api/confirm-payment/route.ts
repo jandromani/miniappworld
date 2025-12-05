@@ -6,6 +6,7 @@ import {
   recordAuditEvent,
   updatePaymentStatus,
 } from '@/lib/database';
+import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
 
@@ -161,6 +162,10 @@ export async function POST(req: NextRequest) {
   const normalizedExpectedToken = storedPayment.token_address
     ? normalizeTokenIdentifier(storedPayment.token_address)
     : undefined;
+  const expectedTokenKey = normalizedExpectedToken
+    ? resolveTokenFromAddress(normalizedExpectedToken)
+    : null;
+  const amountTolerance = expectedTokenKey ? TOKEN_AMOUNT_TOLERANCE[expectedTokenKey] ?? 0n : 0n;
 
   if (storedPayment.session_token && storedPayment.session_token !== sessionToken) {
     await updatePaymentStatus(
@@ -257,7 +262,9 @@ export async function POST(req: NextRequest) {
 
   if (transactionAmount !== undefined && storedPayment.token_amount) {
     const expected = BigInt(storedPayment.token_amount);
-    if (expected !== transactionAmount) {
+    const difference = transactionAmount >= expected ? transactionAmount - expected : expected - transactionAmount;
+
+    if (difference > amountTolerance) {
       await updatePaymentStatus(
         reference,
         'failed',
