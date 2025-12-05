@@ -7,6 +7,7 @@ import {
   MiniAppPaymentSuccessPayload,
 } from '@worldcoin/minikit-js';
 import type { WorldIdAction } from './worldId';
+import { fetchWithBackoff } from './fetchWithBackoff';
 
 /**
  * Verificar World ID (prueba de persona única)
@@ -66,10 +67,12 @@ export async function sendTransaction(transaction: any) {
  * Enviar notificación (backend)
  */
 export async function sendNotification(userId: string, message: string) {
-  const res = await fetch('/api/send-notification', {
+  const res = await fetchWithBackoff('/api/send-notification', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, message }),
+    timeoutMs: 5000,
+    maxRetries: 2,
   });
 
   if (!res.ok) {

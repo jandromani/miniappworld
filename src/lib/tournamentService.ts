@@ -2,6 +2,7 @@ import tournamentsConfig from '@/config/tournaments.json';
 import { LeaderboardEntry, Tournament } from './types';
 import { payForTournament } from './paymentService';
 import { SupportedToken, resolveTokenFromAddress } from './constants';
+import { fetchWithBackoff } from './fetchWithBackoff';
 import { normalizeTokenIdentifier } from './tokenNormalization';
 
 const BASE_PATH = '/api/tournaments';
@@ -23,7 +24,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export async function getActiveTournaments(): Promise<Tournament[]> {
-  const response = await fetch(`${BASE_PATH}?status=active,upcoming`);
+  const response = await fetchWithBackoff(`${BASE_PATH}?status=active,upcoming`, { timeoutMs: 4000 });
   const data = await handleResponse<Tournament[]>(response);
 
   return data
@@ -32,7 +33,7 @@ export async function getActiveTournaments(): Promise<Tournament[]> {
 }
 
 export async function getTournamentDetails(tournamentId: string): Promise<Tournament> {
-  const response = await fetch(`${BASE_PATH}/${tournamentId}`);
+  const response = await fetchWithBackoff(`${BASE_PATH}/${tournamentId}`, { timeoutMs: 4000 });
   const data = await handleResponse<Tournament>(response);
 
   return parseTournamentDates(data);
@@ -55,11 +56,12 @@ export async function joinTournament(
     throw new Error('No se obtuvo referencia de pago');
   }
 
-  const response = await fetch(`${BASE_PATH}/${tournamentId}/join`, {
+  const response = await fetchWithBackoff(`${BASE_PATH}/${tournamentId}/join`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'include',
     body: JSON.stringify({ token, amount, userId, paymentReference: paymentResult.reference }),
+    timeoutMs: 6000,
   });
 
   await handleResponse<void>(response);
@@ -95,10 +97,11 @@ export async function createTournamentFromConfig(configIndex: number) {
     throw new Error('Configuración de torneo no encontrada');
   }
 
-  const response = await fetch('/api/tournaments/create', {
+  const response = await fetchWithBackoff('/api/tournaments/create', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
+    timeoutMs: 6000,
   });
 
   return handleResponse(response);
@@ -107,7 +110,10 @@ export async function createTournamentFromConfig(configIndex: number) {
 export async function getTournamentLeaderboard(
   tournamentId: string
 ): Promise<LeaderboardEntry[]> {
-  const response = await fetch(`${BASE_PATH}/${tournamentId}/leaderboard`, { cache: 'no-store' });
+  const response = await fetchWithBackoff(`${BASE_PATH}/${tournamentId}/leaderboard`, {
+    cache: 'no-store',
+    timeoutMs: 4000,
+  });
   const data = await handleResponse<LeaderboardEntry[]>(response);
 
   return data.map((entry, index) => ({

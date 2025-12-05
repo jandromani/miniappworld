@@ -9,6 +9,7 @@ import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
+import { fetchWithBackoff } from '@/lib/fetchWithBackoff';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 type NotificationApiKey = {
@@ -463,7 +464,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const response = await fetch('https://developer.worldcoin.org/api/v2/minikit/send-notification', {
+    const response = await fetchWithBackoff('https://developer.worldcoin.org/api/v2/minikit/send-notification', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
@@ -483,6 +484,12 @@ export async function POST(req: NextRequest) {
             title: sanitizedTitle,
             message: sanitizedMessage,
           },
+        ],
+        mini_app_path: sanitizedMiniAppPath,
+      }),
+      timeoutMs: 6000,
+      maxRetries: 2,
+    });
           body: JSON.stringify({
             app_id: process.env.APP_ID,
             wallet_addresses: walletAddresses,
