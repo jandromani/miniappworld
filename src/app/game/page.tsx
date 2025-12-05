@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { MiniKit } from '@worldcoin/minikit-js';
 
 import { useHapticsPreference } from '@/lib/useHapticsPreference';
@@ -35,6 +36,49 @@ export default function GamePage() {
           hapticsType: 'impact',
           style: 'light',
         });
+  const [score, setScore] = useState(0);
+  const [correctAnswers, setCorrectAnswers] = useState(0);
+  const [totalAnswers, setTotalAnswers] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const sessionId = useMemo(() => crypto.randomUUID(), []);
+
+  const persistProgress = async (nextScore: number, nextCorrect: number, nextTotal: number) => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const response = await fetch('/api/game/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId,
+          mode: 'quick',
+          score: nextScore,
+          correctAnswers: nextCorrect,
+          totalQuestions: nextTotal,
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error ?? 'No se pudo guardar el progreso');
+      }
+
+      setLastSavedAt(new Date().toLocaleTimeString());
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Error inesperado al guardar progreso';
+      setSaveError(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAnswerSelection = (selectedIndex: number) => {
+    const isCorrect = selectedIndex === question.correctIndex;
+    const nextTotal = totalAnswers + 1;
+    const nextCorrect = isCorrect ? correctAnswers + 1 : correctAnswers;
+    const nextScore = isCorrect ? score + 100 : score;
 
         await MiniKit.commandsAsync.sendHapticFeedback({
           hapticsType: 'notification',
@@ -53,6 +97,10 @@ export default function GamePage() {
     setFeedback(isCorrect ? '¡Respuesta correcta!' : 'Respuesta incorrecta.');
 
     await sendHaptics(isCorrect);
+    setTotalAnswers(nextTotal);
+    setCorrectAnswers(nextCorrect);
+    setScore(nextScore);
+    void persistProgress(nextScore, nextCorrect, nextTotal);
   };
 
   return (
@@ -64,6 +112,12 @@ export default function GamePage() {
 
       <section className="space-y-3 rounded-xl border p-4 shadow-sm">
         <h2 className="text-xl font-semibold">{question.text}</h2>
+        <p className="text-sm text-gray-600">Sesión actual: {sessionId}</p>
+        <div className="flex gap-4 text-sm text-gray-700">
+          <span>Puntaje: {score}</span>
+          <span>Respuestas correctas: {correctAnswers}</span>
+          <span>Preguntas contestadas: {totalAnswers}</span>
+        </div>
         <div className="grid gap-3">
           {question.options.map((option, index) => (
             <button
@@ -79,6 +133,15 @@ export default function GamePage() {
       </section>
 
       {feedback && <div className="rounded-md bg-blue-50 px-4 py-3 text-blue-800">{feedback}</div>}
+
+      <section className="rounded-lg border px-4 py-3 text-sm text-gray-700">
+        <div className="flex items-center gap-3">
+          <span className="font-semibold">Sincronización:</span>
+          {saving ? <span>Guardando progreso...</span> : <span>Progreso sincronizado</span>}
+          {lastSavedAt && <span className="text-gray-500">Último guardado: {lastSavedAt}</span>}
+        </div>
+        {saveError && <p className="mt-2 text-red-600">{saveError}</p>}
+      </section>
     </main>
   );
 }
