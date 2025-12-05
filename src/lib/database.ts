@@ -291,17 +291,32 @@ function assertTournamentExists(db: DatabaseShape, tournamentId: string) {
   return tournament;
 }
 
-function assertUserExists(db: DatabaseShape, userId?: string, context?: AuditContext) {
+function assertUserExists(
+  db: DatabaseShape,
+  userId?: string,
+  context?: AuditContext,
+  walletAddress?: string,
+) {
   if (!userId || userId === 'anonymous' || context?.skipUserValidation) return;
 
   const now = Date.now();
-  const exists = db.world_id_verifications.some(
+  const record = db.world_id_verifications.find(
     (entry) => entry.user_id === userId && !isWorldIdVerificationExpired(entry, now)
   );
-  if (!exists) {
+
+  if (!record) {
     const error = new Error('User not found');
     (error as NodeJS.ErrnoException).code = 'USER_NOT_FOUND';
     throw error;
+  }
+
+  if (walletAddress && record.wallet_address) {
+    const matches = walletAddress.toLowerCase() === record.wallet_address.toLowerCase();
+    if (!matches) {
+      const error = new Error('User wallet does not match registered wallet');
+      (error as NodeJS.ErrnoException).code = 'USER_WALLET_MISMATCH';
+      throw error;
+    }
   }
 }
 
@@ -379,7 +394,7 @@ export async function createPaymentRecord(
       assertTournamentExists(db, record.tournament_id);
     }
 
-    assertUserExists(db, record.user_id, context);
+    assertUserExists(db, record.user_id, context, record.wallet_address);
 
     const created: PaymentRecord = {
       ...record,
@@ -514,11 +529,12 @@ export async function updateTournamentRecord(tournament: TournamentRecord): Prom
 
 export async function addTournamentParticipant(
   participant: TournamentParticipantRecord,
-  context: AuditContext = {}
+  context: AuditContext = {},
+  options: { walletAddress?: string } = {}
 ): Promise<TournamentParticipantRecord> {
   const entry = await withDbTransaction(async (db) => {
     assertTournamentExists(db, participant.tournament_id);
-    assertUserExists(db, participant.user_id, context);
+    assertUserExists(db, participant.user_id, context, options.walletAddress);
 
     const exists = db.tournament_participants.find(
       (item) => item.tournament_id === participant.tournament_id && item.user_id === participant.user_id
