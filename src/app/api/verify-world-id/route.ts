@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
 import { verifyCloudProof } from '@worldcoin/minikit-js';
-import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
+import { ApiLogLevel, apiErrorResponse, logApiEvent, type ApiErrorCode } from '@/lib/apiError';
 import {
   findWorldIdVerificationByNullifier,
   findWorldIdVerificationByUser,
@@ -13,6 +13,121 @@ import { validateCriticalEnvVars } from '@/lib/envValidation';
 
 const SESSION_COOKIE = 'session_token';
 const PATH = 'verify-world-id';
+
+type VerifyCloudProofErrorCode =
+  | 'action_mismatch'
+  | 'invalid_action'
+  | 'invalid_app_id'
+  | 'invalid_nullifier'
+  | 'invalid_merkle_root'
+  | 'nullifier_used'
+  | 'rate_limited'
+  | 'request_expired'
+  | 'signature_invalid'
+  | 'verification_failed'
+  | string;
+
+type VerifyErrorMapping = {
+  apiCode: ApiErrorCode;
+  message: string;
+  status?: number;
+  logLevel: ApiLogLevel;
+  reason: string;
+};
+
+const VERIFY_CLOUD_PROOF_ERRORS: Partial<Record<VerifyCloudProofErrorCode, VerifyErrorMapping>> = {
+  invalid_app_id: {
+    apiCode: 'CONFIG_MISSING',
+    message: 'Configuración de World ID inválida en el servidor',
+    status: 500,
+    logLevel: 'error',
+    reason: 'invalid_app_id',
+  },
+  action_mismatch: {
+    apiCode: 'FORBIDDEN',
+    message: 'La prueba no corresponde a la acción solicitada',
+    status: 403,
+    logLevel: 'warn',
+    reason: 'action_mismatch',
+  },
+  invalid_action: {
+    apiCode: 'FORBIDDEN',
+    message: 'La acción enviada no coincide con la configuración de World ID',
+    status: 403,
+    logLevel: 'warn',
+    reason: 'invalid_action',
+  },
+  invalid_nullifier: {
+    apiCode: 'CONFLICT',
+    message: 'Identidad de World ID no válida o ya utilizada',
+    status: 409,
+    logLevel: 'warn',
+    reason: 'invalid_nullifier',
+  },
+  nullifier_used: {
+    apiCode: 'CONFLICT',
+    message: 'Esta identidad ya fue utilizada anteriormente',
+    status: 409,
+    logLevel: 'warn',
+    reason: 'nullifier_used',
+  },
+  invalid_merkle_root: {
+    apiCode: 'VERIFICATION_FAILED',
+    message: 'La raíz de Merkle no coincide con la prueba',
+    status: 400,
+    logLevel: 'error',
+    reason: 'invalid_merkle_root',
+  },
+  verification_failed: {
+    apiCode: 'VERIFICATION_FAILED',
+    message: 'La prueba de World ID es inválida o incompleta',
+    status: 400,
+    logLevel: 'warn',
+    reason: 'verification_failed',
+  },
+  rate_limited: {
+    apiCode: 'RATE_LIMITED',
+    message: 'Demasiadas verificaciones recientes, intenta de nuevo en unos minutos',
+    status: 429,
+    logLevel: 'warn',
+    reason: 'rate_limited',
+  },
+  request_expired: {
+    apiCode: 'VERIFICATION_FAILED',
+    message: 'La prueba de World ID expiró. Repite la verificación en la app.',
+    status: 400,
+    logLevel: 'warn',
+    reason: 'request_expired',
+  },
+  signature_invalid: {
+    apiCode: 'VERIFICATION_FAILED',
+    message: 'Firma de la prueba inválida',
+    status: 400,
+    logLevel: 'error',
+    reason: 'signature_invalid',
+  },
+};
+
+function mapVerifyCloudProofError(verifyRes: unknown, actionName: WorldIdAction) {
+  const code = (verifyRes as { code?: string })?.code ?? 'unknown_error';
+  const mapping = VERIFY_CLOUD_PROOF_ERRORS[code];
+
+  logApiEvent(mapping?.logLevel ?? 'error', {
+    path: PATH,
+    event: 'world-id_verify_failed',
+    action: actionName,
+    verifyCode: code,
+    reason: mapping?.reason ?? 'unmapped_error',
+    details: verifyRes,
+  });
+
+  return apiErrorResponse(mapping?.apiCode ?? 'VERIFICATION_FAILED', {
+    message: mapping?.message ?? 'No se pudo verificar la prueba de World ID',
+    status: mapping?.status,
+    details: { verifyRes, verifyCode: code },
+    path: PATH,
+  });
+}
 
 export async function POST(req: NextRequest) {
   const envError = validateCriticalEnvVars();
@@ -98,11 +213,7 @@ export async function POST(req: NextRequest) {
     );
 
     if (!verifyRes.success) {
-      return apiErrorResponse('VERIFICATION_FAILED', {
-        message: 'No se pudo verificar la prueba de World ID',
-        details: verifyRes,
-        path: PATH,
-      });
+      return mapVerifyCloudProofError(verifyRes, actionName);
     }
 
     const sessionToken = randomUUID();
