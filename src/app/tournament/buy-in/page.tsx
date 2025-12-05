@@ -45,57 +45,71 @@ export default function TournamentBuyInPage() {
   };
 
   return (
-    <main className="p-6 flex flex-col gap-6">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-bold">Sistema de Buy-In</h1>
-        <p className="text-gray-600">
-          Elige tu modalidad y paga la entrada con MiniKit para desbloquear partidas rápidas o inscribirte en
-          torneos.
+    <main className="mx-auto flex max-w-4xl flex-col gap-6 p-4 sm:p-6">
+      <header className="flex flex-col gap-3 rounded-xl bg-gradient-to-r from-purple-50 to-blue-50 p-4 shadow-sm">
+        <p className="text-xs uppercase tracking-wide text-purple-700">Pagos MiniKit</p>
+        <h1 className="text-2xl font-bold sm:text-3xl">Sistema de Buy-In</h1>
+        <p className="text-sm text-gray-600">
+          Elige tu modalidad y paga la entrada para desbloquear partidas rápidas o inscribirte en torneos. Diseño listo
+          para móviles.
         </p>
       </header>
 
-      <section className="grid gap-4 md:grid-cols-2">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <button
           type="button"
           className={`rounded-lg border p-4 text-left transition ${
-            mode === 'quick' ? 'border-blue-600 bg-blue-50' : 'border-gray-200'
+            mode === 'quick'
+              ? 'border-blue-600 bg-blue-50 shadow-sm'
+              : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50'
           }`}
           onClick={() => setMode('quick')}
           disabled={isPaying}
         >
           <h2 className="text-xl font-semibold">Partida rápida</h2>
           <p className="text-gray-600">Precio fijo de 1 WLD. Juega al instante.</p>
+          <p className="mt-3 inline-flex rounded-full bg-white px-3 py-1 text-xs font-medium text-blue-700">
+            Optimizado para móviles
+          </p>
         </button>
 
         <button
           type="button"
           className={`rounded-lg border p-4 text-left transition ${
-            mode === 'tournament' ? 'border-blue-600 bg-blue-50' : 'border-gray-200'
+            mode === 'tournament'
+              ? 'border-blue-600 bg-blue-50 shadow-sm'
+              : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50'
           }`}
           onClick={() => setMode('tournament')}
           disabled={isPaying}
         >
           <h2 className="text-xl font-semibold">Torneo</h2>
           <p className="text-gray-600">Configura token y monto para el buy-in.</p>
+          <p className="mt-3 inline-flex rounded-full bg-white px-3 py-1 text-xs font-medium text-blue-700">
+            Flujos accesibles en pantallas pequeñas
+          </p>
         </button>
       </section>
 
       {mode === 'tournament' && (
-        <section className="space-y-4 rounded-lg border border-gray-200 p-4">
+        <section className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">Token</label>
-            <div className="flex flex-wrap gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" data-testid="token-grid">
               {Object.entries(SUPPORTED_TOKENS).map(([key, config]) => (
                 <button
                   key={key}
                   type="button"
-                  className={`rounded border px-3 py-2 text-sm transition ${
-                    selectedToken === key ? 'border-blue-600 bg-blue-50' : 'border-gray-200'
+                  className={`rounded border px-3 py-2 text-left text-sm transition ${
+                    selectedToken === key
+                      ? 'border-blue-600 bg-blue-50 shadow-sm'
+                      : 'border-gray-200 hover:border-blue-500 hover:bg-blue-50'
                   }`}
                   onClick={() => setSelectedToken(key as SupportedToken)}
                   disabled={isPaying}
                 >
-                  {config.symbol} — {config.name}
+                  <span className="block font-semibold">{config.symbol}</span>
+                  <span className="text-gray-600">{config.name}</span>
                 </button>
               ))}
             </div>
@@ -103,7 +117,7 @@ export default function TournamentBuyInPage() {
             {selectedToken === 'MEMECOIN' && (
               <button
                 type="button"
-                className="inline-flex w-fit items-center gap-2 rounded border border-amber-500 px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50"
+                className="inline-flex w-full items-center justify-center gap-2 rounded border border-amber-500 px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50 sm:w-fit"
                 onClick={openTokenInPUF}
               >
                 💰 Comprar {MEMECOIN_CONFIG.symbol} en PUF
@@ -115,7 +129,7 @@ export default function TournamentBuyInPage() {
             <label className="text-sm font-medium">Monto del buy-in</label>
             <input
               type="number"
-              className="rounded border px-3 py-2"
+              className="w-full rounded border px-3 py-2"
               min={0}
               step={0.1}
               value={amount}
@@ -133,7 +147,7 @@ export default function TournamentBuyInPage() {
         type="button"
         onClick={handlePayment}
         disabled={isPaying}
-        className="rounded-lg bg-blue-600 px-4 py-3 text-white transition hover:bg-blue-700 disabled:opacity-60"
+        className="w-full rounded-lg bg-blue-600 px-4 py-3 text-center text-white transition hover:bg-blue-700 disabled:opacity-60 sm:w-auto"
       >
         {isPaying ? 'Procesando...' : mode === 'quick' ? 'Pagar y Jugar (1 WLD)' : 'Pagar e Inscribirse'}
       </button>

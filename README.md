@@ -117,6 +117,14 @@ Las rutas de documentación relevantes son:
 - Tests unitarios/integración de Mini App (Jest): `npm test`.
 - Ejecución en CI (serializado): `npm run test:ci`.
 
+### Pruebas móviles de juego y pagos
+- Ejecuta `npm test -- --runTestsByPath __tests__/gamePage.mobile.test.tsx __tests__/tournamentBuyIn.mobile.test.tsx` para
+  validar los estilos responsivos en pantallas reducidas.
+- Verificación manual en 360x640 (móvil):
+  - `/game`: el header se apila, las estadísticas se muestran en 2 columnas y los botones de respuesta ocupan todo el ancho.
+  - `/tournament/buy-in`: los botones de modo se apilan, la grilla de tokens usa 2 columnas y el CTA de pago es de ancho
+    completo.
+
 Las pruebas de Jest utilizan mocks deterministas del Developer Portal y World ID para simular Verify + Pay + Join, validar montos/tokenes y verificar el manejo de errores (identidad no verificada, pagos rechazados o confirmaciones fallidas).
 
 ## Próximos pasos sugeridos
