@@ -32,6 +32,7 @@ export const MiniKit = {
     verify: (...args: any[]) => verifyMock(...args),
     pay: (...args: any[]) => payMock(...args),
     sendTransaction: (...args: any[]) => sendTransactionMock(...args),
+    sendHapticFeedback: (...args: any[]) => hapticFeedbackMock(...args),
   },
   commands: {
     sendHapticFeedback: (...args: any[]) => hapticFeedbackMock(...args),
