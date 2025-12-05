@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { logApiEvent } from '@/lib/apiError';
 import { listTournaments, serializeTournament } from '@/lib/server/tournamentData';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 
@@ -49,6 +50,14 @@ export async function GET(req: NextRequest) {
 
   const tournaments = await listTournaments(statusFilters);
 
+  logApiEvent('info', {
+    path: 'tournaments',
+    action: 'list',
+    filters: statusFilters,
+    count: serialized.length,
+  });
+
+  return NextResponse.json(serialized);
   const filtered = searchTerm
     ? tournaments.filter((tournament) => tournament.name.toLowerCase().includes(searchTerm.toLowerCase()))
     : tournaments;

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import { MEMECOIN_CONFIG, USDC_ADDRESS, WLD_ADDRESS } from '@/lib/constants';
 import { findWorldIdVerificationBySession, recordAuditEvent, recordTournament } from '@/lib/database';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
@@ -53,7 +54,10 @@ export async function POST(req: NextRequest) {
   } = await req.json();
 
   if (!name || !buyInToken || !buyInAmount || !maxPlayers || !startTime || !endTime || !prizeDistribution) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: 'Missing required fields',
+      path: 'tournaments/create',
+    });
   }
 
   let lowerBuyIn: string;
@@ -67,15 +71,29 @@ export async function POST(req: NextRequest) {
   }
 
   if (!SUPPORTED_ADDRESSES.includes(lowerBuyIn)) {
-    return NextResponse.json({ error: 'Token not supported' }, { status: 400 });
+    return apiErrorResponse('UNSUPPORTED_TOKEN', {
+      message: 'Token not supported',
+      details: { buyInToken },
+      path: 'tournaments/create',
+    });
   }
 
   const invalid = normalizedAccepted.find((token: string) => !SUPPORTED_ADDRESSES.includes(token));
 
   if (invalid) {
-    return NextResponse.json({ error: 'Token not supported' }, { status: 400 });
+    return apiErrorResponse('UNSUPPORTED_TOKEN', {
+      message: 'Token not supported',
+      details: { token: invalid },
+      path: 'tournaments/create',
+    });
   }
 
+  logApiEvent('info', {
+    path: 'tournaments/create',
+    action: 'create',
+    tournamentName: name,
+    buyInToken,
+    maxPlayers,
   let normalizedBuyInAmount: bigint;
   try {
     normalizedBuyInAmount = BigInt(buyInAmount);

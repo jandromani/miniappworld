@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import {
   createPaymentRecord,
   findPaymentByReference,
@@ -17,6 +18,7 @@ import {
 } from '@/lib/tokenNormalization';
 
 const SESSION_COOKIE = 'session_token';
+const PATH = 'initiate-payment';
 
 export async function POST(req: NextRequest) {
   const envError = validateCriticalEnvVars();
@@ -51,10 +53,10 @@ export async function POST(req: NextRequest) {
       status: 'error',
       details: { reason: 'missing_session_token' },
     });
-    return NextResponse.json(
-      { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
-      { status: 401 }
-    );
+    return apiErrorResponse('SESSION_REQUIRED', {
+      message: 'Sesión no verificada. Realiza la verificación de World ID.',
+      path: PATH,
+    });
   }
 
   const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
@@ -68,20 +70,22 @@ export async function POST(req: NextRequest) {
       status: 'error',
       details: { reason: 'session_not_found' },
     });
-    return NextResponse.json(
-      { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
-      { status: 401 }
-    );
+    return apiErrorResponse('SESSION_INVALID', {
+      message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
+      path: PATH,
+    });
   }
 
   if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
-    return NextResponse.json(
-      { success: false, message: 'El usuario enviado no coincide con la sesión activa' },
-      { status: 403 }
-    );
+    return apiErrorResponse('FORBIDDEN', {
+      message: 'El usuario enviado no coincide con la sesión activa',
+      details: { bodyUserId, sessionUser: sessionIdentity.user_id },
+      path: PATH,
+    });
   }
 
   const verifiedUserId = sessionIdentity.user_id;
+  const verifiedWalletAddress = walletAddress ?? sessionIdentity.wallet_address;
   const verifiedWalletAddress = sessionIdentity.wallet_address;
   const verifiedNullifier = sessionIdentity.nullifier_hash;
 
@@ -105,34 +109,36 @@ export async function POST(req: NextRequest) {
   }
 
   if (!reference || !type) {
-    return NextResponse.json(
-      { success: false, message: 'Referencia y tipo son obligatorios' },
-      { status: 400 }
-    );
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: 'Referencia y tipo son obligatorios',
+      path: PATH,
+    });
   }
 
   if (type !== 'quick_match' && type !== 'tournament') {
-    return NextResponse.json(
-      { success: false, message: 'Tipo de pago no soportado' },
-      { status: 400 }
-    );
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: 'Tipo de pago no soportado',
+      path: PATH,
+      details: { type },
+    });
   }
 
   if (type === 'tournament' && !tournamentId) {
-    return NextResponse.json(
-      { success: false, message: 'tournamentId es obligatorio para torneos' },
-      { status: 400 }
-    );
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: 'tournamentId es obligatorio para torneos',
+      path: PATH,
+    });
   }
 
   if (
     walletAddress &&
     walletAddress.toLowerCase() !== verifiedWalletAddress.toLowerCase()
   ) {
-    return NextResponse.json(
-      { success: false, message: 'La wallet enviada no coincide con la sesión verificada' },
-      { status: 403 }
-    );
+    return apiErrorResponse('FORBIDDEN', {
+      message: 'La wallet enviada no coincide con la sesión verificada',
+      path: PATH,
+      details: { walletAddress, sessionWallet: sessionIdentity.wallet_address },
+    });
   }
 
   const existingPayment = await findPaymentByReference(reference);
@@ -145,10 +151,11 @@ export async function POST(req: NextRequest) {
         : existingPayment.wallet_address.toLowerCase() === verifiedWalletAddress.toLowerCase();
 
     if (!sameUser || !sameWallet) {
-      return NextResponse.json(
-        { success: false, message: 'La referencia ya fue utilizada por otro usuario' },
-        { status: 403 }
-      );
+      return apiErrorResponse('REFERENCE_CONFLICT', {
+        message: 'La referencia ya fue utilizada por otro usuario',
+        path: PATH,
+        details: { reference },
+      });
     }
 
     return NextResponse.json({
@@ -201,7 +208,16 @@ export async function POST(req: NextRequest) {
     session_token: sessionToken,
   }, { userId: verifiedUserId, sessionId: sessionToken });
 
-  console.log('Pago iniciado:', { reference, type, token, amount, tournamentId });
+  logApiEvent('info', {
+    path: PATH,
+    action: 'initiate',
+    reference,
+    type,
+    token,
+    amount,
+    tournamentId,
+    userId: verifiedUserId,
+  });
 
   return NextResponse.json({ success: true, reference, tournamentId });
 }
