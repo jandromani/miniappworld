@@ -5,6 +5,8 @@ import fs from 'fs/promises';
 import { POST as verifyWorldIdHandler } from '@/app/api/verify-world-id/route';
 import { POST as initiatePaymentHandler } from '@/app/api/initiate-payment/route';
 import { POST as confirmPaymentHandler } from '@/app/api/confirm-payment/route';
+import { POST as joinTournamentHandler } from '@/app/api/tournaments/[tournamentId]/join/route';
+import { GET as leaderboardHandler } from '@/app/api/tournaments/[tournamentId]/leaderboard/route';
 import { __setVerifyCloudProofResponse } from '@worldcoin/minikit-js';
 
 jest.mock('@worldcoin/minikit-js');
@@ -15,7 +17,7 @@ async function resetTestData() {
   await fs.rm(DATA_DIR, { recursive: true, force: true });
 }
 
-async function runFullPaymentFlow(reference: string) {
+async function runFullPaymentFlow(reference: string, tournamentId = `t-${reference}`) {
   __setVerifyCloudProofResponse({ success: true });
 
   const walletAddress = '0xC0ffee254729296a45a3885639AC7E10F9d54979';
@@ -51,14 +53,14 @@ async function runFullPaymentFlow(reference: string) {
         type: 'tournament',
         token: 'WLD',
         amount: 2,
-        tournamentId: `t-${reference}`,
+        tournamentId,
         walletAddress,
       }),
     })
   );
 
   const initiationBody = await initiateResponse.json();
-  expect(initiationBody).toEqual({ success: true, reference, tournamentId: `t-${reference}` });
+  expect(initiationBody).toEqual({ success: true, reference, tournamentId });
 
   const developerPortalPayload = {
     transaction_status: 'success',
@@ -66,7 +68,7 @@ async function runFullPaymentFlow(reference: string) {
     token: 'WLD',
     amount: tokenAmount,
     wallet_address: walletAddress,
-    tournament_id: `t-${reference}`,
+    tournament_id: tournamentId,
   };
 
   global.fetch = jest.fn(async (url: RequestInfo | URL) => {
@@ -111,7 +113,7 @@ async function runFullPaymentFlow(reference: string) {
     world_id_verifications: any[];
   };
 
-  return { dbContent, walletAddress, tokenAmount };
+  return { dbContent, walletAddress, tokenAmount, sessionCookie, tournamentId, reference };
 }
 
 describe('Flujo E2E con base JSON y Developer Portal mock', () => {
@@ -131,7 +133,7 @@ describe('Flujo E2E con base JSON y Developer Portal mock', () => {
 
   it('completa verify -> initiate -> confirm y persiste el estado en la base JSON', async () => {
     const reference = 'ref-e2e-1';
-    const { dbContent, walletAddress, tokenAmount } = await runFullPaymentFlow(reference);
+    const { dbContent, walletAddress, tokenAmount, tournamentId } = await runFullPaymentFlow(reference);
 
     expect(dbContent.world_id_verifications).toHaveLength(1);
     expect(dbContent.payments).toHaveLength(1);
@@ -141,7 +143,7 @@ describe('Flujo E2E con base JSON y Developer Portal mock', () => {
       expect.objectContaining({
         reference,
         status: 'confirmed',
-        tournament_id: `t-${reference}`,
+        tournament_id: tournamentId,
         token_amount: tokenAmount,
         wallet_address: walletAddress,
       })
@@ -160,5 +162,86 @@ describe('Flujo E2E con base JSON y Developer Portal mock', () => {
     const secondRun = await runFullPaymentFlow('ref-e2e-3');
     expect(secondRun.dbContent.payments).toHaveLength(1);
     expect(secondRun.dbContent.payments[0].reference).toBe('ref-e2e-3');
+  });
+
+  it('recorre verify -> pago -> join -> leaderboard en escenario exitoso', async () => {
+    const flow = await runFullPaymentFlow('ref-e2e-join', 'daily-wld');
+
+    const joinResponse = await joinTournamentHandler(
+      new NextRequest('http://localhost/api/tournaments/daily-wld/join', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          cookie: `session_token=${flow.sessionCookie}`,
+        },
+        body: JSON.stringify({
+          token: 'WLD',
+          amount: flow.tokenAmount,
+          userId: 'user-ref-e2e-join',
+          username: 'Player E2E',
+          walletAddress: flow.walletAddress,
+          score: 10,
+          paymentReference: flow.reference,
+        }),
+      }),
+      { params: { tournamentId: flow.tournamentId } }
+    );
+
+    const joinPayload = await joinResponse.json();
+    expect(joinResponse.status).toBe(200);
+    expect(joinPayload).toEqual(
+      expect.objectContaining({ success: true, tournament: expect.objectContaining({ tournamentId: flow.tournamentId }) })
+    );
+
+    const leaderboardResponse = await leaderboardHandler(
+      new NextRequest(`http://localhost/api/tournaments/${flow.tournamentId}/leaderboard`, { method: 'GET' }),
+      { params: { tournamentId: flow.tournamentId } }
+    );
+
+    const leaderboard = (await leaderboardResponse.json()) as Array<{ userId: string; score: number }>;
+    const playerEntry = leaderboard.find((entry) => entry.userId === 'user-ref-e2e-join');
+
+    expect(playerEntry).toBeDefined();
+    expect(playerEntry?.score).toBe(10);
+  });
+
+  it('bloquea join sin sesión y mantiene leaderboard sin cambios', async () => {
+    const flow = await runFullPaymentFlow('ref-e2e-join-error', 'daily-wld');
+
+    const leaderboardBefore = await leaderboardHandler(
+      new NextRequest(`http://localhost/api/tournaments/${flow.tournamentId}/leaderboard`, { method: 'GET' }),
+      { params: { tournamentId: flow.tournamentId } }
+    );
+
+    const baseline = (await leaderboardBefore.json()) as Array<{ userId: string }>;
+
+    const joinResponse = await joinTournamentHandler(
+      new NextRequest('http://localhost/api/tournaments/daily-wld/join', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          token: 'WLD',
+          amount: flow.tokenAmount,
+          userId: 'user-ref-e2e-join-error',
+          username: 'Player Blocked',
+          walletAddress: flow.walletAddress,
+          score: 5,
+          paymentReference: flow.reference,
+        }),
+      }),
+      { params: { tournamentId: flow.tournamentId } }
+    );
+
+    const errorPayload = await joinResponse.json();
+    expect(joinResponse.status).toBe(401);
+    expect(errorPayload).toEqual(expect.objectContaining({ error: expect.stringContaining('sesión') }));
+
+    const leaderboardAfter = await leaderboardHandler(
+      new NextRequest(`http://localhost/api/tournaments/${flow.tournamentId}/leaderboard`, { method: 'GET' }),
+      { params: { tournamentId: flow.tournamentId } }
+    );
+
+    const finalEntries = (await leaderboardAfter.json()) as Array<{ userId: string }>;
+    expect(finalEntries).toEqual(baseline);
   });
 });
