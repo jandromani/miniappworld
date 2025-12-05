@@ -6,10 +6,16 @@ import {
   findWorldIdVerificationByUser,
   insertWorldIdVerification,
 } from '@/lib/database';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
 
 const SESSION_COOKIE = 'session_token';
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   try {
     const { proof, nullifier_hash, merkle_root, wallet_address, user_id, action, verification_level } =
       await req.json();
@@ -33,14 +39,6 @@ export async function POST(req: NextRequest) {
           error: 'wallet_address no tiene un formato válido',
         },
         { status: 400 }
-      );
-    }
-
-    if (!process.env.APP_ID) {
-      console.error('[verify-world-id] Configuración faltante: APP_ID no definido');
-      return NextResponse.json(
-        { success: false, error: 'Configuración del servidor incompleta' },
-        { status: 500 }
       );
     }
 
