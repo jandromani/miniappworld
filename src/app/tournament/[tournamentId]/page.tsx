@@ -79,10 +79,16 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
     setSelectedToken(preferredToken ?? acceptedTokens[0] ?? null);
   }, [acceptedTokens, tournament]);
 
-  const canJoin = useMemo(
-    () => tournament?.status === 'upcoming' && !joining && !!selectedToken,
-    [tournament?.status, joining, selectedToken]
-  );
+  const canJoin = useMemo(() => {
+    if (!tournament) return false;
+
+    return (
+      tournament.status === 'active' &&
+      tournament.currentPlayers < tournament.maxPlayers &&
+      !joining &&
+      !!selectedToken
+    );
+  }, [joining, selectedToken, tournament]);
 
   const canPlay = useMemo(
     () => tournament?.status === 'active' && (hasJoined || !!leaderboard.find((e) => e.isCurrentUser)),
