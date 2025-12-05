@@ -2,14 +2,15 @@ import tournamentsConfig from '@/config/tournaments.json';
 import { SUPPORTED_TOKENS, SupportedToken } from '@/lib/constants';
 import {
   addTournamentParticipant,
-  findTournamentRecord,
   listTournamentParticipants,
   listTournamentRecords,
   listTournamentResults,
   normalizeTournamentRecord,
-  recordTournament,
   TournamentRecord,
+  updateTournamentResultAndPool,
   upsertTournamentResult,
+  findTournamentRecord,
+  recordTournament,
 } from '@/lib/database';
 import { LeaderboardEntry, Tournament } from '@/lib/types';
 import { normalizeTokenIdentifier } from '../tokenNormalization';
@@ -154,26 +155,23 @@ export async function getLeaderboardEntries(
     }));
 }
 
-export async function appendLeaderboardEntry(tournamentId: string, entry: Omit<LeaderboardEntry, 'rank'>) {
+export async function updateTournamentPoolAndLeaderboardEntry(
+  tournament: Tournament,
+  entry: Omit<LeaderboardEntry, 'rank'>
+) {
   await seedTournaments();
-  await upsertTournamentResult({
-    tournament_id: tournamentId,
-    user_id: entry.userId,
-    score: entry.score,
-    prize: entry.prize,
-  }, { userId: entry.userId });
-}
+  const { tournament: updatedRecord } = await updateTournamentResultAndPool(
+    tournament.tournamentId,
+    {
+      user_id: entry.userId,
+      score: entry.score,
+      prize: entry.prize,
+    },
+    { userId: entry.userId }
+  );
 
-export async function incrementTournamentPool(tournament: Tournament) {
-  await seedTournaments();
-  const record = await findTournamentRecord(tournament.tournamentId);
-  if (!record) return tournament;
-
-  const newPool = (BigInt(record.prize_pool ?? '0') + BigInt(record.buy_in_amount)).toString();
-  const updated: TournamentRecord = { ...record, prize_pool: newPool };
-  await recordTournament(updated);
   const participants = await listTournamentParticipants(tournament.tournamentId);
-  return toTournamentModel(updated, participants.length);
+  return toTournamentModel(updatedRecord, participants.length);
 }
 
 export function validateTokenForTournament(

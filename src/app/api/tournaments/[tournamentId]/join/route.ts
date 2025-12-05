@@ -2,10 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import {
   addParticipantRecord,
-  appendLeaderboardEntry,
   getTournament,
-  incrementTournamentPool,
   participantExists,
+  updateTournamentPoolAndLeaderboardEntry,
   serializeTournament,
   validateTokenForTournament,
 } from '@/lib/server/tournamentData';
@@ -139,8 +138,7 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
 
   await addParticipantRecord(tournament.tournamentId, userId, paymentReference);
 
-  const updatedTournament = await incrementTournamentPool(tournament);
-  await appendLeaderboardEntry(tournament.tournamentId, {
+  const updatedTournament = await updateTournamentPoolAndLeaderboardEntry(tournament, {
     userId,
     username: username ?? 'Nuevo jugador',
     walletAddress: walletAddress ?? payment.wallet_address ?? SUPPORTED_TOKENS[tokenKey].address,
