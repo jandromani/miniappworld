@@ -8,6 +8,11 @@ import {
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
+import {
+  isSupportedTokenAddress,
+  isSupportedTokenSymbol,
+  normalizeTokenIdentifier,
+} from '@/lib/tokenNormalization';
 
 const SESSION_COOKIE = 'session_token';
 
@@ -59,9 +64,28 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const verifiedIdentity = sessionIdentity;
   const verifiedUserId = sessionIdentity.user_id;
   const verifiedWalletAddress = sessionIdentity.wallet_address;
+  const verifiedNullifier = sessionIdentity.nullifier_hash;
+
+  if (!verifiedUserId || !verifiedWalletAddress || !verifiedNullifier) {
+    await recordAuditEvent({
+      action: 'initiate_payment',
+      entity: 'payments',
+      entityId: reference,
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: 'missing_session_identity_fields' },
+    });
+
+    return NextResponse.json(
+      {
+        success: false,
+        message: 'Información de sesión incompleta. Vuelve a verificar tu identidad.',
+      },
+      { status: 400 }
+    );
+  }
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -84,12 +108,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const verifiedWalletAddress = walletAddress ?? sessionIdentity.wallet_address;
-
   if (
     walletAddress &&
-    sessionIdentity.wallet_address &&
-    walletAddress.toLowerCase() !== sessionIdentity.wallet_address.toLowerCase()
+    walletAddress.toLowerCase() !== verifiedWalletAddress.toLowerCase()
   ) {
     return NextResponse.json(
       { success: false, message: 'La wallet enviada no coincide con la sesión verificada' },
@@ -113,7 +134,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true, reference, tournamentId: existingPayment.tournament_id });
+    return NextResponse.json({
+      success: true,
+      reference,
+      tournamentId: existingPayment.tournament_id,
+      userId: existingPayment.user_id ?? sessionIdentity.user_id,
+      walletAddress: existingPayment.wallet_address ?? verifiedWalletAddress,
+    });
+  }
+
+  if (token && typeof token !== 'string') {
+    return NextResponse.json({ success: false, message: 'Token inválido' }, { status: 400 });
+  }
+
+  if (token && !isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token)) {
+    return NextResponse.json({ success: false, message: 'Token no soportado' }, { status: 400 });
   }
 
   const normalizedToken = token
@@ -121,7 +156,13 @@ export async function POST(req: NextRequest) {
     : normalizeTokenIdentifier(SUPPORTED_TOKENS.WLD.address);
   const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
   const decimals = SUPPORTED_TOKENS[tokenKey].decimals;
-  const tokenAmount = amount !== undefined ? BigInt(Math.round(Number(amount) * 10 ** decimals)).toString() : '0';
+  const numericAmount = Number(amount);
+
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    return NextResponse.json({ success: false, message: 'El monto debe ser un número positivo' }, { status: 400 });
+  }
+
+  const tokenAmount = BigInt(Math.round(numericAmount * 10 ** decimals)).toString();
 
   await createPaymentRecord({
     reference,
@@ -130,9 +171,9 @@ export async function POST(req: NextRequest) {
     token_amount: tokenAmount,
     tournament_id: tournamentId,
     recipient_address: process.env.NEXT_PUBLIC_RECEIVER_ADDRESS,
-    user_id: sessionIdentity.user_id,
+    user_id: verifiedUserId,
     wallet_address: verifiedWalletAddress,
-    nullifier_hash: sessionIdentity?.nullifier_hash,
+    nullifier_hash: verifiedNullifier,
     session_token: sessionToken,
   }, { userId: verifiedUserId, sessionId: sessionToken });
 
