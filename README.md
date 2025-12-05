@@ -28,6 +28,10 @@ npm run start
 - `AUDIT_LOG_CLOUDWATCH_GROUP` y `AUDIT_LOG_CLOUDWATCH_STREAM` (+ `AWS_REGION`): publica las entradas en CloudWatch Logs, creando el grupo/stream si no existen.
 - Controla el timeout del reenvío con `AUDIT_LOG_FORWARD_TIMEOUT_MS` (4s por defecto).
 
+## Observabilidad y respuesta a incidentes
+- Las métricas expuestas en `/api/metrics` cubren fallos de API, pagos, contención/deadlocks y latencias de transacción.
+- Consulta `docs/observability.md` para configurar alertas (pagos fallidos, tasa de errores y contención), centralizar logs/auditorías en tu stack de observabilidad y practicar simulacros de incidentes.
+
 ## Copias y restauración de `data/`
 - Genera snapshots versionados de la carpeta `data/` y metadata (hash, tamaño, fecha) con:
   ```bash
