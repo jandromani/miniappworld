@@ -10,6 +10,7 @@ import {
 } from '@/lib/database';
 import { DEFAULT_WORLD_ID_ACTION, isValidWorldIdAction, type WorldIdAction } from '@/lib/worldId';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
+import { isValidEvmAddress } from '@/lib/addressValidation';
 
 const SESSION_COOKIE = 'session_token';
 const PATH = 'verify-world-id';
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (wallet_address && !/^0x[a-fA-F0-9]{40}$/.test(wallet_address)) {
+    if (wallet_address && !isValidEvmAddress(wallet_address)) {
       return apiErrorResponse('INVALID_WALLET', {
         message: 'wallet_address no tiene un formato válido',
         details: { wallet_address },
