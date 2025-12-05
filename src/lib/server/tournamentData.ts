@@ -141,7 +141,7 @@ export async function getLeaderboardEntries(
   await seedTournaments();
   const entries = await listTournamentResults(tournamentId);
 
-  return entries
+  const leaderboard = entries
     .slice()
     .sort((a, b) => b.score - a.score)
     .map((entry, index) => ({
@@ -152,6 +152,23 @@ export async function getLeaderboardEntries(
       score: entry.score,
       prize: index < distribution.length ? calculatePrizeAmount(prizePool, distribution[index]) : entry.prize,
     }));
+
+  await Promise.all(
+    leaderboard.map((entry) =>
+      upsertTournamentResult(
+        {
+          tournament_id: tournamentId,
+          user_id: entry.userId,
+          score: entry.score,
+          rank: entry.rank,
+          prize: entry.prize,
+        },
+        { skipUserValidation: true }
+      )
+    )
+  );
+
+  return leaderboard;
 }
 
 export async function appendLeaderboardEntry(tournamentId: string, entry: Omit<LeaderboardEntry, 'rank'>) {
