@@ -31,7 +31,7 @@ describe('paymentService', () => {
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({}));
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({ success: true }));
 
-    await expect(payForQuickMatch()).resolves.toEqual({ success: true });
+    await expect(payForQuickMatch()).resolves.toEqual({ success: true, reference: expect.any(String) });
 
     expect(payWithMiniKitMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -65,7 +65,7 @@ describe('paymentService', () => {
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({}));
     (global.fetch as jest.Mock).mockImplementationOnce(() => createFetchResponse({ success: true }));
 
-    await payForTournament('MEMECOIN', 5, 'demo-tournament');
+    const payment = await payForTournament('MEMECOIN', 5, 'demo-tournament');
 
     expect(payWithMiniKitMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -80,6 +80,7 @@ describe('paymentService', () => {
       })
     );
     expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(payment.reference).toBeDefined();
   });
 
   it('propaga errores de confirmación del backend', async () => {
