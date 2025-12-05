@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rateLimit';
 import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import { validateSameOrigin } from '@/lib/security';
 import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
@@ -321,6 +322,7 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'ip_not_allowed',
     });
+    recordApiFailureMetric('send-notification', 'ip_not_allowed');
     return NextResponse.json({ success: false, message: 'IP no permitida' }, { status: 403 });
   }
 
@@ -334,11 +336,13 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'origin_not_allowed',
     });
+    recordApiFailureMetric('send-notification', 'origin_not_allowed');
     return NextResponse.json({ success: false, message: 'Origen no permitido' }, { status: 403 });
   }
 
   if (!isAuthenticated(req)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'auth_failed' });
+    recordApiFailureMetric('send-notification', 'auth_failed');
     return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
   }
 

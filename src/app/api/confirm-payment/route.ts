@@ -15,6 +15,7 @@ import { sendNotification } from '@/lib/notificationService';
 import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 const PATH = 'confirm-payment';
@@ -516,6 +517,7 @@ export async function POST(req: NextRequest) {
         { userId: storedPayment.user_id, sessionId }
       );
 
+    return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
       logApiEvent('info', {
         path: PATH,
         action: 'confirmed',
@@ -567,6 +569,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     if (isLocalStorageDisabled(error)) {
+      recordApiFailureMetric(PATH, 'LOCAL_STORAGE_DISABLED');
       return NextResponse.json(
         {
           success: false,
@@ -577,6 +580,7 @@ export async function POST(req: NextRequest) {
     }
 
     console.error('[confirm-payment] Error inesperado', error);
+    recordApiFailureMetric(PATH, 'UNEXPECTED_ERROR');
     return NextResponse.json(
       { success: false, message: 'No se pudo confirmar el pago. Intente nuevamente más tarde.' },
       { status: 500 }

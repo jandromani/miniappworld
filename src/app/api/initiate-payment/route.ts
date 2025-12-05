@@ -12,6 +12,7 @@ import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import {
   isSupportedTokenAddress,
   isSupportedTokenSymbol,
@@ -283,6 +284,7 @@ export async function POST(req: NextRequest) {
     }
 
     console.error('[initiate-payment] Error inesperado', error);
+    recordApiFailureMetric(PATH, 'UNEXPECTED_ERROR');
     return NextResponse.json({ success: false, message: 'Error interno al iniciar pago' }, { status: 500 });
   }
     if (!sameUser || !sameWallet) {

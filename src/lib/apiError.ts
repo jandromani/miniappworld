@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { NextResponse } from 'next/server';
+import { recordApiFailureMetric } from '@/lib/metrics';
 
 export type ApiLogLevel = 'info' | 'warn' | 'error';
 
@@ -153,6 +154,8 @@ export function apiErrorResponse(
     path: options.path,
     details: options.details,
   });
+
+  recordApiFailureMetric(options.path, code);
 
   return NextResponse.json({ success: false, code, message }, { status });
 }
