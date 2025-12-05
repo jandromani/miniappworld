@@ -150,7 +150,9 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
     return NextResponse.json({ error: validation.message }, { status: 400 });
   }
 
-  await addParticipantRecord(tournament.tournamentId, userId, paymentReference);
+  const participantWallet = walletAddress ?? worldId.wallet_address ?? payment.wallet_address;
+
+  await addParticipantRecord(tournament.tournamentId, userId, paymentReference, participantWallet);
 
   const updatedTournament = await incrementTournamentPool(tournament);
   await appendLeaderboardEntry(tournament.tournamentId, {

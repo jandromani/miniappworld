@@ -217,7 +217,12 @@ export function validateTokenForTournament(
   return { valid: true };
 }
 
-export async function addParticipantRecord(tournamentId: string, userId: string, paymentReference: string) {
+export async function addParticipantRecord(
+  tournamentId: string,
+  userId: string,
+  paymentReference: string,
+  walletAddress?: string,
+) {
   await seedTournaments();
   await addTournamentParticipant({
     tournament_id: tournamentId,
@@ -225,7 +230,7 @@ export async function addParticipantRecord(tournamentId: string, userId: string,
     payment_reference: paymentReference,
     joined_at: new Date().toISOString(),
     status: 'joined',
-  }, { userId });
+  }, { userId }, { walletAddress });
 }
 
 export async function participantExists(tournamentId: string, userId: string) {
