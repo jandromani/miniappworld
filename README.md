@@ -34,6 +34,14 @@ World ID y `sendHapticFeedback` para feedback táctil.
 - `contracts/TournamentManager.sol`: Contrato principal para registrar torneos, manejar buy-ins y distribuir premios usando ERC-20.
 - `contracts/TournamentPool.sol`: Contrato simple para pools de torneos (ejemplo legacy).
 
+### API keys para `/api/send-notification`
+- Usa `NOTIFICATIONS_API_KEYS` como un JSON string con múltiples claves y expiraciones opcionales, por ejemplo:
+  ```bash
+  NOTIFICATIONS_API_KEYS='[{"key":"clave-actual","expiresAt":"2025-01-01T00:00:00Z"},{"key":"clave-anterior"}]'
+  ```
+- Como fallback, puedes definir `NOTIFICATIONS_API_KEY` con una sola clave.
+- El formato se valida al arrancar la aplicación; si es inválido se lanzará un error temprano.
+
 ## Páginas
 - `/`: Overview del proyecto y fases.
 - `/game`: Juego de trivia con 15 preguntas, temporizador y comodines (50/50, salto, público).
