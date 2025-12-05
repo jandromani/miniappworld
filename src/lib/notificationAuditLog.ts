@@ -7,6 +7,8 @@ export type NotificationAuditEvent = {
   role?: string;
   walletCount?: number;
   clientIp?: string;
+  origin?: string | null;
+  fingerprint?: string;
   success: boolean;
   reason?: string;
 };

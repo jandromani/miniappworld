@@ -1,5 +1,5 @@
+import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { rateLimit } from '@/lib/rateLimit';
 import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import { recordApiFailureMetric } from '@/lib/metrics';
@@ -8,32 +8,32 @@ import { checksumAddress, isValidEvmAddress } from '@/lib/addressValidation';
 import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
-import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
+import { hashNotificationApiKey } from '@/lib/notificationApiKeys';
 import { fetchWithBackoff } from '@/lib/fetchWithBackoff';
-import { performDeveloperRequest } from '@/lib/developerPortalClient';
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const NONCE_TTL_MS = 5 * 60_000;
+
+const nonceCache = new Map<string, number>();
+
+const notificationRateLimiter = createRateLimiter({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  maxRequests: RATE_LIMIT_MAX_REQUESTS,
+  prefix: 'notifications',
+});
 
 type NotificationApiKey = {
   value: string;
   expiresAt?: Date;
 };
 
-type RateLimitEntry = {
-  windowStart: number;
-  count: number;
-};
-
-type AuthResult = {
-  providedKey?: string | null;
-  role?: string;
-  authorized: boolean;
-};
-
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 10;
-const NONCE_TTL_MS = 5 * 60_000;
-
-const rateLimitByKey = new Map<string, RateLimitEntry>();
-const nonceCache = new Map<string, number>();
+type AuthResult =
+  | { status: 'ok'; providedKey: string; key: NotificationApiKey }
+  | { status: 'missing'; providedKey: null }
+  | { status: 'expired'; providedKey: string }
+  | { status: 'invalid'; providedKey: string }
+  | { status: 'no_active_keys'; providedKey: string | null };
 
 function parseApiKeyEntry(entry: unknown, index: number): NotificationApiKey {
   if (typeof entry === 'string') {
@@ -98,6 +98,8 @@ function loadConfiguredKeys(): NotificationApiKey[] {
   return [{ value: singleKeyValue as string }];
 }
 
+const configuredNotificationKeys = loadConfiguredKeys();
+
 function isActiveKey(key: NotificationApiKey, now: Date) {
   return !key.expiresAt || key.expiresAt.getTime() > now.getTime();
 }
@@ -115,46 +117,34 @@ function safeKeyCompare(provided: string, expected: string) {
   }
 }
 
-function authenticateApiKey(providedKey: string | null) {
+function authenticateApiKey(providedKey: string | null): AuthResult {
   const now = new Date();
+  const activeKeys = configuredNotificationKeys.filter((key) => isActiveKey(key, now));
+
+  if (activeKeys.length === 0) {
+    return { status: 'no_active_keys', providedKey };
+  }
 
   if (!providedKey) {
-    return { authenticated: false, reason: 'missing_api_key' as const };
+    return { status: 'missing', providedKey: null };
   }
 
   const matchedKey = configuredNotificationKeys.find((key) => safeKeyCompare(providedKey, key.value));
 
-  if (matchedKey && !isActiveKey(matchedKey, now)) {
-    return { authenticated: false, reason: 'key_expired' as const };
+  if (!matchedKey) {
+    return { status: 'invalid', providedKey };
   }
 
-  const activeMatch = configuredNotificationKeys.find(
-    (key) => isActiveKey(key, now) && safeKeyCompare(providedKey, key.value)
-  );
-
-  if (activeMatch) {
-    return { authenticated: true, reason: 'authenticated' as const };
+  if (!isActiveKey(matchedKey, now)) {
+    return { status: 'expired', providedKey };
   }
 
-  const hasActiveKeys = configuredNotificationKeys.some((key) => isActiveKey(key, now));
-
-  if (!hasActiveKeys) {
-    return { authenticated: false, reason: 'no_active_keys' as const };
-  }
-
-  return { authenticated: false, reason: 'auth_failed' as const };
+  return { status: 'ok', providedKey, key: matchedKey };
 }
-
-const configuredNotificationKeys = loadConfiguredKeys();
 
 function hashKey(key: string) {
   return crypto.createHash('sha256').update(key).digest('hex');
 }
-const notificationRateLimiter = createRateLimiter({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  maxRequests: RATE_LIMIT_MAX_REQUESTS,
-  prefix: 'notifications',
-});
 
 function getAllowlistFromEnv(value?: string | null) {
   return (value ?? '')
@@ -173,23 +163,29 @@ function getClientIp(req: NextRequest) {
 }
 
 function isValidWalletAddress(address: unknown): address is string {
-  return isValidEvmAddress(address);
+  return typeof address === 'string' && isValidEvmAddress(address);
 }
 
 function normalizeWalletAddress(address: string) {
   return checksumAddress(address);
 }
 
-function validatePayload(body: any) {
+type PayloadValidationResult = {
+  errors: string[];
+  resolvedWalletAddresses: string[];
+  nonce?: string;
+};
+
+function validatePayload(body: any): PayloadValidationResult {
   const errors: string[] = [];
 
   if (!body || typeof body !== 'object') {
     errors.push('Payload inválido');
-    return errors;
+    return { errors, resolvedWalletAddresses: [] };
   }
 
-  const { walletAddresses, title, message, miniAppPath } = body;
-  const resolvedWalletAddresses = walletAddresses.map((address: string) => normalizeWalletAddress(address));
+  const { walletAddresses, title, message, miniAppPath, nonce } = body;
+  const resolvedWalletAddresses: string[] = [];
 
   if (!Array.isArray(walletAddresses) || walletAddresses.length === 0) {
     errors.push('walletAddresses debe ser un arreglo con al menos una dirección');
@@ -198,9 +194,11 @@ function validatePayload(body: any) {
       errors.push('walletAddresses no puede incluir más de 50 direcciones por solicitud');
     }
 
-    const invalidAddresses = walletAddresses.filter((addr) => !isValidWalletAddress(addr));
+    const invalidAddresses = walletAddresses.filter((addr: unknown) => !isValidWalletAddress(addr));
     if (invalidAddresses.length > 0) {
       errors.push('Algunas direcciones de wallet no son válidas');
+    } else {
+      walletAddresses.forEach((addr: string) => resolvedWalletAddresses.push(normalizeWalletAddress(addr)));
     }
   }
 
@@ -216,27 +214,11 @@ function validatePayload(body: any) {
     errors.push('miniAppPath es obligatorio y no puede superar 200 caracteres');
   }
 
-  if (typeof body.nonce !== 'string' || body.nonce.trim().length < 16 || body.nonce.length > 128) {
+  if (typeof nonce !== 'string' || nonce.trim().length < 16 || nonce.length > 128) {
     errors.push('nonce es obligatorio y debe tener entre 16 y 128 caracteres');
   }
 
-  return errors;
-}
-
-async function authenticate(req: NextRequest): Promise<AuthResult> {
-  const providedKey = req.headers.get('x-api-key');
-  const resolved = await resolveNotificationApiKey(providedKey);
-
-  return {
-    providedKey,
-    role: resolved?.role,
-    authorized: Boolean(resolved),
-  };
-}
-
-function logAudit(event: {
-function checkRateLimit(apiKey: string) {
-  return notificationRateLimiter.limit(apiKey);
+  return { errors, resolvedWalletAddresses, nonce };
 }
 
 async function logAudit(event: {
@@ -255,6 +237,9 @@ async function logAudit(event: {
   logApiEvent(event.success ? 'info' : 'warn', {
     path: 'send-notification',
     event: 'notification_audit',
+    reason: event.reason,
+  });
+
   await appendNotificationAuditEvent({
     timestamp,
     apiKeyHash,
@@ -289,7 +274,6 @@ function isOriginAllowed(origin: string | null) {
 function isNonceValid(nonce: string) {
   const now = Date.now();
 
-  // Purge expired nonces opportunistically
   for (const [key, timestamp] of nonceCache) {
     if (now - timestamp > NONCE_TTL_MS) {
       nonceCache.delete(key);
@@ -304,6 +288,21 @@ function isNonceValid(nonce: string) {
   return !exists;
 }
 
+function mapAuthStatusToResponse(authResult: AuthResult) {
+  switch (authResult.status) {
+    case 'missing':
+      return { status: 401, message: 'Falta API key' } as const;
+    case 'expired':
+      return { status: 401, message: 'API key expirada' } as const;
+    case 'invalid':
+      return { status: 401, message: 'API key inválida' } as const;
+    case 'no_active_keys':
+      return { status: 503, message: 'No hay API keys activas configuradas' } as const;
+    default:
+      return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const envError = validateCriticalEnvVars();
   if (envError) {
@@ -311,144 +310,69 @@ export async function POST(req: NextRequest) {
   }
 
   const clientIp = getClientIp(req);
+  const origin = req.headers.get('origin');
+  const fingerprint = getClientFingerprint(req, clientIp);
   const providedKey = req.headers.get('x-api-key');
   const authResult = authenticateApiKey(providedKey);
 
-  if (!authResult.authenticated) {
-    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: authResult.reason });
-  const origin = req.headers.get('origin');
-  const fingerprint = getClientFingerprint(req, clientIp);
+  if (authResult.status !== 'ok') {
+    const responseInfo = mapAuthStatusToResponse(authResult);
+    await logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: authResult.status });
+    recordApiFailureMetric('send-notification', authResult.status);
+    return NextResponse.json({ success: false, message: responseInfo?.message ?? 'No autorizado' }, { status: responseInfo?.status ?? 401 });
+  }
 
   if (!isIpAllowed(clientIp)) {
-    logAudit({
-      apiKey: providedKey,
-      walletCount: 0,
-      clientIp,
-      origin,
-      fingerprint,
-      success: false,
-      reason: 'ip_not_allowed',
-    });
+    await logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'ip_not_allowed' });
     recordApiFailureMetric('send-notification', 'ip_not_allowed');
     return NextResponse.json({ success: false, message: 'IP no permitida' }, { status: 403 });
   }
 
   if (!isOriginAllowed(origin)) {
-    logAudit({
-      apiKey: providedKey,
-      walletCount: 0,
-      clientIp,
-      origin,
-      fingerprint,
-      success: false,
-      reason: 'origin_not_allowed',
-    });
+    await logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'origin_not_allowed' });
     recordApiFailureMetric('send-notification', 'origin_not_allowed');
     return NextResponse.json({ success: false, message: 'Origen no permitido' }, { status: 403 });
   }
 
-  if (!isAuthenticated(req)) {
-    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'auth_failed' });
-    recordApiFailureMetric('send-notification', 'auth_failed');
-    return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
-  }
-
-  const rate = await rateLimit(`notifications:${providedKey ?? 'missing'}`, {
-    windowMs: RATE_LIMIT_WINDOW_MS,
-    maxRequests: RATE_LIMIT_MAX_REQUESTS,
-  });
-
-  if (!rate.allowed) {
-  if (!checkRateLimit(providedKey!)) {
-    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'rate_limited' });
-  const authResult = await authenticate(req);
-  const providedKey = authResult.providedKey;
-
   const originCheck = validateSameOrigin(req);
-
   if (!originCheck.valid) {
-    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: originCheck.reason });
+    await logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: originCheck.reason });
+    recordApiFailureMetric('send-notification', originCheck.reason ?? 'origin_check_failed');
     return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
   }
 
-  if (!isAuthenticated(req)) {
-    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'auth_failed' });
-    return apiErrorResponse('UNAUTHORIZED', {
-      message: 'No autorizado',
-      path: 'send-notification',
-      details: { reason: 'auth_failed' },
-    });
-  if (!authResult.authorized || !providedKey) {
-    await logAudit({
-      apiKey: providedKey,
-      role: authResult.role,
-      walletCount: 0,
-      clientIp,
-      success: false,
-      reason: 'auth_failed',
-    });
-    return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
-  }
-
-  const rateLimitResult = await checkRateLimit(providedKey!);
+  const rateLimitResult = await notificationRateLimiter.limit(providedKey);
   if (!rateLimitResult.allowed) {
-    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'rate_limited' });
+    await logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'rate_limited' });
+    recordApiFailureMetric('send-notification', 'rate_limited');
     return apiErrorResponse('RATE_LIMITED', {
       message: 'Límite de solicitudes excedido, intente más tarde',
       path: 'send-notification',
     });
-  if (!checkRateLimit(providedKey)) {
-    await logAudit({
-      apiKey: providedKey,
-      role: authResult.role,
-      walletCount: 0,
-      clientIp,
-      success: false,
-      reason: 'rate_limited',
-    });
-    return NextResponse.json({ success: false, message: 'Límite de solicitudes excedido, intente más tarde' }, { status: 429 });
   }
 
   const body = await req.json();
-  const validationErrors = validatePayload(body);
+  const { errors, resolvedWalletAddresses, nonce } = validatePayload(body);
 
-  if (validationErrors.length > 0) {
+  if (errors.length > 0) {
     await logAudit({
       apiKey: providedKey,
-      role: authResult.role,
       walletCount: Array.isArray(body?.walletAddresses) ? body.walletAddresses.length : 0,
       clientIp,
       origin,
       fingerprint,
       success: false,
-      reason: `validation_failed:${validationErrors.join('|')}`,
+      reason: `validation_failed:${errors.join('|')}`,
     });
     return apiErrorResponse('INVALID_PAYLOAD', {
-      message: validationErrors.join('; '),
+      message: errors.join('; '),
       path: 'send-notification',
-      details: { validationErrors },
+      details: { validationErrors: errors },
     });
   }
 
-  const { walletAddresses, title, message, miniAppPath } = body;
-
-  const sanitizedTitle = sanitizeText(title);
-  const sanitizedMessage = sanitizeText(message);
-  const sanitizedMiniAppPath = sanitizeText(miniAppPath);
-
-  if (!sanitizedTitle || !sanitizedMessage || !sanitizedMiniAppPath) {
-    logAudit({
-      apiKey: providedKey,
-      walletCount: Array.isArray(body?.walletAddresses) ? body.walletAddresses.length : 0,
-      clientIp,
-      success: false,
-      reason: 'sanitization_failed',
-    });
-    return NextResponse.json(
-      { success: false, message: 'Los campos title, message y miniAppPath deben contener texto válido' },
-      { status: 400 }
-  if (!isNonceValid(body.nonce)) {
-    logAudit({
+  if (!nonce || !isNonceValid(nonce)) {
+    await logAudit({
       apiKey: providedKey,
       walletCount: resolvedWalletAddresses.length,
       clientIp,
@@ -459,7 +383,27 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json(
       { success: false, message: 'Solicitud duplicada detectada (nonce reutilizado)' },
-      { status: 409 }
+      { status: 409 },
+    );
+  }
+
+  const sanitizedTitle = sanitizeText(body.title);
+  const sanitizedMessage = sanitizeText(body.message);
+  const sanitizedMiniAppPath = sanitizeText(body.miniAppPath);
+
+  if (!sanitizedTitle || !sanitizedMessage || !sanitizedMiniAppPath) {
+    await logAudit({
+      apiKey: providedKey,
+      walletCount: resolvedWalletAddresses.length,
+      clientIp,
+      origin,
+      fingerprint,
+      success: false,
+      reason: 'sanitization_failed',
+    });
+    return NextResponse.json(
+      { success: false, message: 'Los campos title, message y miniAppPath deben contener texto válido' },
+      { status: 400 },
     );
   }
 
@@ -487,54 +431,36 @@ export async function POST(req: NextRequest) {
         ],
         mini_app_path: sanitizedMiniAppPath,
       }),
-      timeoutMs: 6000,
-      maxRetries: 2,
+      timeoutMs: 7000,
+      maxRetries: 3,
+      initialDelayMs: 400,
     });
-          body: JSON.stringify({
-            app_id: process.env.APP_ID,
-            wallet_addresses: walletAddresses,
-            localisations: [
-              {
-                language: 'en',
-                title: sanitizedTitle,
-                message: sanitizedMessage,
-              },
-              {
-                language: 'es',
-                title: sanitizedTitle,
-                message: sanitizedMessage,
-              },
-            ],
-            mini_app_path: sanitizedMiniAppPath,
-          }),
-        }),
-      {
-        endpoint: '/api/v2/minikit/send-notification',
-        method: 'POST',
-        payload: {
-          app_id: process.env.APP_ID,
-          wallet_addresses: walletAddresses,
-          title: sanitizedTitle,
-          message: sanitizedMessage,
-          mini_app_path: sanitizedMiniAppPath,
-        },
-      }
-    );
 
     const result = await response.json();
 
-    logAudit({
+    if (!response.ok) {
+      await logAudit({
+        apiKey: providedKey,
+        walletCount: resolvedWalletAddresses.length,
+        clientIp,
+        origin,
+        fingerprint,
+        success: false,
+        reason: `upstream_status_${response.status}`,
+      });
+      recordApiFailureMetric('send-notification', `upstream_${response.status}`);
+      return apiErrorResponse('UPSTREAM_ERROR', {
+        message: result?.message ?? 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
+        path: 'send-notification',
+      });
+    }
+
+    await logAudit({
       apiKey: providedKey,
       walletCount: resolvedWalletAddresses.length,
       clientIp,
       origin,
       fingerprint,
-      success: true,
-    await logAudit({
-      apiKey: providedKey,
-      role: authResult.role,
-      walletCount: resolvedWalletAddresses.length,
-      clientIp,
       success: true,
     });
 
@@ -545,9 +471,9 @@ export async function POST(req: NextRequest) {
       status: response.status,
     });
 
-    return NextResponse.json(result, { status: response.ok ? 200 : response.status });
+    return NextResponse.json(result, { status: 200 });
   } catch (error) {
-    logAudit({
+    await logAudit({
       apiKey: providedKey,
       walletCount: resolvedWalletAddresses.length,
       clientIp,
@@ -556,34 +482,12 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'upstream_error',
     });
-    logAudit({
-      apiKey: providedKey,
-      walletCount: resolvedWalletAddresses.length,
-      clientIp,
-      success: false,
-      reason: 'upstream_error',
-    });
+    recordApiFailureMetric('send-notification', 'upstream_error');
+
     return apiErrorResponse('UPSTREAM_ERROR', {
       message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
       path: 'send-notification',
       details: { error: (error as Error)?.message },
     });
-    await logAudit({
-      apiKey: providedKey,
-      role: authResult.role,
-      walletCount: resolvedWalletAddresses.length,
-      clientIp,
-      success: false,
-      reason: 'upstream_error',
-    });
-    console.error('Error enviando notificación al servicio protegido', error);
-
-    return NextResponse.json(
-      {
-        success: false,
-        message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
-      },
-      { status: 502 }
-    );
   }
 }
