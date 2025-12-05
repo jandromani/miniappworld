@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { sanitizeText } from '@/lib/sanitize';
+
 type GlobalLeaderboardEntry = {
   rank: number;
   username: string;
@@ -74,7 +76,7 @@ export default function LeaderboardPage() {
                   className={`border-t ${entry.isCurrentUser ? 'bg-blue-50 font-semibold' : ''}`}
                 >
                   <td className="px-4 py-3">{entry.rank}</td>
-                  <td className="px-4 py-3">{entry.username}</td>
+                  <td className="px-4 py-3">{sanitizeText(entry.username) || 'Usuario'}</td>
                   <td className="px-4 py-3">{entry.totalPoints}</td>
                   <td className="px-4 py-3">{entry.tournamentsWon}</td>
                   <td className="px-4 py-3">
