@@ -13,7 +13,8 @@
     "data:snapshot": "node scripts/dataSnapshots.js create",
     "data:snapshot:list": "node scripts/dataSnapshots.js list",
     "data:snapshot:restore": "node scripts/dataSnapshots.js restore",
-    "data:snapshot:verify": "node scripts/dataSnapshots.js verify"
+    "data:snapshot:verify": "node scripts/dataSnapshots.js verify",
+    "sessions:cleanup": "node -r ts-node/register scripts/cleanupExpiredSessions.ts"
   },
   "dependencies": {
     "@worldcoin/minikit-js": "^0.0.10",
@@ -42,6 +43,7 @@
     "eslint-config-next": "14.2.5",
     "jest": "29.7.0",
     "ts-jest": "29.2.5",
+    "ts-node": "^10.9.2",
     "typescript": "5.6.2"
   }
 }

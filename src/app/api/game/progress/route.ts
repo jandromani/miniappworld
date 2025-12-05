@@ -1,35 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { findWorldIdVerificationBySession, recordAuditEvent, upsertGameProgress } from '@/lib/database';
-
-const SESSION_COOKIE = 'session_token';
+import { upsertGameProgress } from '@/lib/database';
+import { requireActiveSession } from '@/lib/sessionValidation';
 
 export async function POST(req: NextRequest) {
   const { sessionId, score, correctAnswers, totalQuestions, mode, tournamentId } = await req.json();
-  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+  const sessionResult = await requireActiveSession(req, {
+    path: 'game/progress',
+    audit: { action: 'sync_game_progress', entity: 'game_progress', entityId: sessionId },
+  });
 
-  if (!sessionToken) {
-    await recordAuditEvent({
-      action: 'sync_game_progress',
-      entity: 'game_progress',
-      entityId: sessionId,
-      status: 'error',
-      details: { reason: 'missing_session_token' },
-    });
-    return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
 
-  const identity = await findWorldIdVerificationBySession(sessionToken);
-  if (!identity) {
-    await recordAuditEvent({
-      action: 'sync_game_progress',
-      entity: 'game_progress',
-      entityId: sessionId,
-      sessionId: sessionToken,
-      status: 'error',
-      details: { reason: 'session_not_found' },
-    });
-    return NextResponse.json({ error: 'La sesión expiró o no existe' }, { status: 401 });
-  }
+  const { identity, sessionToken } = sessionResult;
 
   const normalizedMode = mode === 'tournament' ? 'tournament' : 'quick';
   if (normalizedMode === 'tournament' && !tournamentId) {

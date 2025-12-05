@@ -3,7 +3,6 @@ import { MiniAppPaymentSuccessPayload } from '@worldcoin/minikit-js';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import {
   findPaymentByReference,
-  findWorldIdVerificationBySession,
   isLocalStorageDisabled,
   PaymentRecord,
   recordAuditEvent,
@@ -17,6 +16,7 @@ import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 import { recordApiFailureMetric } from '@/lib/metrics';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
+import { requireActiveSession } from '@/lib/sessionValidation';
 
 const PATH = 'confirm-payment';
 
@@ -98,9 +98,6 @@ export async function POST(req: NextRequest) {
       reference: string;
     };
 
-    const sessionToken = req.cookies.get('session_token')?.value;
-    const sessionId = sessionToken;
-
     const originCheck = validateSameOrigin(req);
 
     if (!originCheck.valid) {
@@ -108,27 +105,12 @@ export async function POST(req: NextRequest) {
         action: 'confirm_payment',
         entity: 'payments',
         entityId: reference,
-        sessionId,
+        sessionId: req.cookies.get('session_token')?.value,
         status: 'error',
         details: { reason: originCheck.reason },
       });
 
       return apiErrorResponse('FORBIDDEN', { message: 'Solicitud no autorizada', path: PATH });
-    }
-
-    if (!sessionToken) {
-      await recordAuditEvent({
-        action: 'confirm_payment',
-        entity: 'payments',
-        entityId: reference,
-        status: 'error',
-        details: { reason: 'missing_session_token' },
-      });
-
-      return apiErrorResponse('SESSION_REQUIRED', {
-        message: 'Sesión no verificada. Realiza la verificación de World ID.',
-        path: PATH,
-      });
     }
 
     if (!payload || !reference) {
@@ -142,23 +124,16 @@ export async function POST(req: NextRequest) {
       return apiErrorResponse('PAYMENT_REJECTED', { message: 'Pago rechazado', path: PATH });
     }
 
-    const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+    const sessionResult = await requireActiveSession(req, {
+      path: PATH,
+      audit: { action: 'confirm_payment', entity: 'payments', entityId: reference },
+    });
 
-    if (!sessionIdentity) {
-      await recordAuditEvent({
-        action: 'confirm_payment',
-        entity: 'payments',
-        entityId: reference,
-        sessionId,
-        status: 'error',
-        details: { reason: 'session_not_found' },
-      });
-
-      return apiErrorResponse('SESSION_INVALID', {
-        message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
-        path: PATH,
-      });
+    if ('error' in sessionResult) {
+      return sessionResult.error;
     }
+
+    const { identity: sessionIdentity, sessionToken } = sessionResult;
 
     const storedPayment = await findPaymentByReference(reference);
 
