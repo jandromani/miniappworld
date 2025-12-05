@@ -38,6 +38,14 @@ export const SUPPORTED_TOKENS = {
 
 export type SupportedToken = keyof typeof SUPPORTED_TOKENS;
 
+export const TOKEN_AMOUNT_TOLERANCE: Record<SupportedToken, bigint> = {
+  // Permitimos un margen de 1 wei para tokens con 18 decimales donde el redondeo es más común
+  WLD: 1n,
+  MEMECOIN: 1n,
+  // USDC usa 6 decimales, por lo que esperamos coincidencia exacta
+  USDC: 0n,
+};
+
 export function resolveTokenFromAddress(address: string): SupportedToken | null {
   if (!address) return null;
 
@@ -57,7 +65,7 @@ export function getTokenSymbolByAddress(address: string): string {
 
 export function getTokenDecimalsByAddress(address: string): number {
   const token = resolveTokenFromAddress(address);
-  if (!token) return 18;
+  if (!token) return 18; // Fallback to 18 decimals to avoid blocking flows when token metadata is missing
 
   return SUPPORTED_TOKENS[token].decimals;
 }
