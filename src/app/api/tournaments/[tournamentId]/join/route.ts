@@ -118,12 +118,20 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
   const paymentWallet = payment.wallet_address?.toLowerCase();
   const verifiedWallet = worldId.wallet_address?.toLowerCase();
 
+  if (paymentWallet && !verifiedWallet) {
+    return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
+  }
+
   if (paymentWallet && verifiedWallet && paymentWallet !== verifiedWallet) {
     return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
   }
 
   if (paymentWallet && walletAddress && paymentWallet !== walletAddress.toLowerCase()) {
     return NextResponse.json({ error: 'La wallet proporcionada no coincide con el pago' }, { status: 403 });
+  }
+
+  if (walletAddress && verifiedWallet && walletAddress.toLowerCase() !== verifiedWallet) {
+    return NextResponse.json({ error: 'La wallet proporcionada no coincide con la verificada' }, { status: 403 });
   }
 
   const normalizedToken = normalizeTokenIdentifier(token);

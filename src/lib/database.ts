@@ -364,6 +364,46 @@ export async function findWorldIdVerificationBySession(session_token: string) {
   );
 }
 
+export async function updateWorldIdWallet(
+  user_id: string,
+  wallet_address: string,
+  context: AuditContext = {}
+): Promise<WorldIdVerificationRecord> {
+  const updatedRecord = await withDbTransaction(async (db) => {
+    const now = Date.now();
+    purgeExpiredWorldIdVerifications(db, now);
+
+    const recordIndex = db.world_id_verifications.findIndex(
+      (record) => record.user_id === user_id && !isWorldIdVerificationExpired(record, now)
+    );
+
+    if (recordIndex === -1) {
+      const error = new Error('World ID verification not found for user');
+      (error as NodeJS.ErrnoException).code = 'USER_NOT_FOUND';
+      throw error;
+    }
+
+    const record = db.world_id_verifications[recordIndex];
+    const updated: WorldIdVerificationRecord = { ...record, wallet_address };
+    db.world_id_verifications[recordIndex] = updated;
+
+    return updated;
+  });
+
+  await appendAuditLog({
+    action: 'update_world_id_wallet',
+    entity: 'world_id_verifications',
+    entityId: updatedRecord.nullifier_hash,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: { wallet_address },
+  });
+
+  return updatedRecord;
+}
+
 export async function createPaymentRecord(
   record: Omit<PaymentRecord, 'payment_id' | 'status' | 'created_at' | 'updated_at'>,
   context: AuditContext = {}

@@ -4,6 +4,7 @@ import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
   recordAuditEvent,
+  updateWorldIdWallet,
 } from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
@@ -55,7 +56,6 @@ export async function POST(req: NextRequest) {
 
   const verifiedIdentity = sessionIdentity;
   const verifiedUserId = sessionIdentity.user_id;
-  const verifiedWalletAddress = sessionIdentity.wallet_address;
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -116,6 +116,13 @@ export async function POST(req: NextRequest) {
   const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
   const decimals = SUPPORTED_TOKENS[tokenKey].decimals;
   const tokenAmount = amount !== undefined ? BigInt(Math.round(Number(amount) * 10 ** decimals)).toString() : '0';
+
+  if (verifiedWalletAddress) {
+    await updateWorldIdWallet(verifiedUserId, verifiedWalletAddress, {
+      userId: verifiedUserId,
+      sessionId: sessionToken,
+    });
+  }
 
   await createPaymentRecord({
     reference,
