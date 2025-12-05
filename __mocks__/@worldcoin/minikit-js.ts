@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 let installed = true;
 
 const verifyMock = jest.fn();
+const verifyCloudProofMock = jest.fn();
 const payMock = jest.fn();
 const sendTransactionMock = jest.fn();
 const hapticFeedbackMock = jest.fn();
@@ -39,6 +40,8 @@ export const MiniKit = {
   },
 };
 
+export const verifyCloudProof = (...args: any[]) => verifyCloudProofMock(...args);
+
 export function tokenToDecimals(amount: number, token: string) {
   const decimals = TOKEN_DECIMALS[token] ?? 18;
   const scaled = BigInt(Math.round(amount * 10 ** decimals));
@@ -61,8 +64,13 @@ export function __setSendTransactionResponse(response: any) {
   sendTransactionMock.mockResolvedValue(response);
 }
 
+export function __setVerifyCloudProofResponse(response: any) {
+  verifyCloudProofMock.mockResolvedValue(response);
+}
+
 export function __resetMiniKitMocks() {
   verifyMock.mockReset();
+  verifyCloudProofMock.mockReset();
   payMock.mockReset();
   sendTransactionMock.mockReset();
   hapticFeedbackMock.mockReset();
