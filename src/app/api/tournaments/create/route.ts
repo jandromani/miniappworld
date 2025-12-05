@@ -70,6 +70,30 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: (error as Error).message }, { status: 400 });
   }
 
+  const normalizedDistribution = Array.isArray(prizeDistribution)
+    ? prizeDistribution.map((value: number) => Number(value))
+    : [];
+
+  const invalidDistribution =
+    !Array.isArray(prizeDistribution) ||
+    normalizedDistribution.length === 0 ||
+    normalizedDistribution.some((value) => Number.isNaN(value));
+
+  if (invalidDistribution) {
+    return NextResponse.json({ error: 'Invalid prize distribution' }, { status: 400 });
+  }
+
+  const distributionTotal = normalizedDistribution.reduce((sum, value) => sum + value, 0);
+  if (distributionTotal !== 100) {
+    return NextResponse.json({ error: 'Prize distribution must add up to 100%' }, { status: 400 });
+  }
+
+  const expectedWinners = Number(maxPlayers);
+  if (normalizedDistribution.length > expectedWinners) {
+    return NextResponse.json({ error: 'Prize distribution exceeds expected winners' }, { status: 400 });
+  }
+
+  const lowerBuyIn = String(buyInToken).toLowerCase();
   if (!SUPPORTED_ADDRESSES.includes(lowerBuyIn)) {
     return apiErrorResponse('UNSUPPORTED_TOKEN', {
       message: 'Token not supported',
