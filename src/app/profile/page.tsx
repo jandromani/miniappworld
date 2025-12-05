@@ -19,6 +19,23 @@ type PlayerStats = {
   lastPlayedAt: string;
 };
 
+type PrivacyConsent = {
+  policy: { version: string; retentionDays: number; sensitiveFields: string[] };
+  consent?: {
+    policy_version: string;
+    wallet_processing: boolean;
+    user_id_processing: boolean;
+    retention_days: number;
+    channels?: string[];
+  };
+};
+
+type DataExport = {
+  dataset: unknown;
+  profile: PlayerStats | null;
+  retentionDays: number;
+};
+
 export default function ProfilePage() {
   const [stats, setStats] = useState<PlayerStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,6 +44,17 @@ export default function ProfilePage() {
   const [avatarUrl, setAvatarUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const [privacy, setPrivacy] = useState<PrivacyConsent | null>(null);
+  const [privacyLoading, setPrivacyLoading] = useState(true);
+  const [privacyMessage, setPrivacyMessage] = useState('');
+  const [exportStatus, setExportStatus] = useState('');
+  const [exportUrl, setExportUrl] = useState<string | null>(null);
+  const [erasing, setErasing] = useState(false);
+  const [consentForm, setConsentForm] = useState({
+    wallet_processing: true,
+    user_id_processing: true,
+    retention_days: 30,
+  });
   const errorRef = useRef<HTMLParagraphElement | null>(null);
 
   useEffect(() => {
@@ -66,7 +94,115 @@ export default function ProfilePage() {
 
   useEffect(() => {
     loadStats();
+    loadPrivacy();
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (exportUrl) {
+        URL.revokeObjectURL(exportUrl);
+      }
+    };
+  }, [exportUrl]);
+
+  const loadPrivacy = async () => {
+    setPrivacyLoading(true);
+    setPrivacyMessage('');
+
+    try {
+      const response = await fetch('/api/player/privacy', { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error('No se pudieron cargar las preferencias de privacidad');
+      }
+
+      const data = (await response.json()) as PrivacyConsent;
+      setPrivacy(data);
+      setConsentForm((current) => ({
+        ...current,
+        wallet_processing: data.consent?.wallet_processing ?? current.wallet_processing,
+        user_id_processing: data.consent?.user_id_processing ?? current.user_id_processing,
+        retention_days: data.consent?.retention_days ?? data.policy.retentionDays,
+      }));
+    } catch (err) {
+      setPrivacyMessage(
+        err instanceof Error ? err.message : 'No se pudieron cargar las preferencias de privacidad'
+      );
+    } finally {
+      setPrivacyLoading(false);
+    }
+  };
+
+  const saveConsent = async () => {
+    setPrivacyMessage('');
+    try {
+      const response = await fetch('/api/player/privacy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletProcessing: consentForm.wallet_processing,
+          userIdProcessing: consentForm.user_id_processing,
+          retentionDays: consentForm.retention_days,
+          acceptPolicies: true,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error ?? 'No se pudo guardar el consentimiento');
+      }
+
+      setPrivacy(data as PrivacyConsent);
+      setPrivacyMessage('Preferencias de privacidad guardadas.');
+    } catch (err) {
+      setPrivacyMessage(err instanceof Error ? err.message : 'Error al guardar consentimiento');
+    }
+  };
+
+  const exportUserData = async () => {
+    setExportStatus('');
+    setExportUrl(null);
+    try {
+      const response = await fetch('/api/player/data');
+      const payload = (await response.json()) as DataExport & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload?.error ?? 'No se pudo exportar tu información');
+      }
+
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      setExportUrl(url);
+      setExportStatus('Datos listos para descargar en JSON.');
+    } catch (err) {
+      setExportStatus(err instanceof Error ? err.message : 'Error al exportar datos');
+    }
+  };
+
+  const deleteUserData = async () => {
+    setErasing(true);
+    setPrivacyMessage('');
+    setExportStatus('');
+
+    try {
+      const response = await fetch('/api/player/data', { method: 'DELETE' });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload?.error ?? 'No se pudo eliminar la información');
+      }
+
+      setStats(null);
+      setPrivacy(null);
+      setAlias('');
+      setAvatarUrl('');
+      setExportUrl(null);
+      setPrivacyMessage('Datos borrados correctamente. Vuelve a verificar para continuar.');
+    } catch (err) {
+      setPrivacyMessage(err instanceof Error ? err.message : 'Error al borrar datos');
+    } finally {
+      setErasing(false);
+    }
+  };
 
   const verifyUser = async () => {
     if (!MiniKit.isInstalled()) {
@@ -265,6 +401,135 @@ export default function ProfilePage() {
             >
               {verifying ? 'Verificando...' : 'Reverificar World ID'}
             </button>
+          </section>
+
+          <section
+            className="rounded-lg border p-5 shadow-sm bg-white space-y-4 lg:col-span-3"
+            aria-labelledby="privacy-heading"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <h3 id="privacy-heading" className="text-lg font-semibold">
+                  Privacidad, consentimiento y derechos de usuario
+                </h3>
+                <p className="text-sm text-gray-600">
+                  Cubrimos datos sensibles (wallet y user_id) para prevención de fraude con retención máxima de 30 días.
+                </p>
+              </div>
+              <a className="text-blue-600 hover:underline text-sm" href="/privacy">
+                Ver política
+              </a>
+            </div>
+
+            {privacyMessage && (
+              <p className="text-sm text-amber-700" role="status" aria-live="polite">
+                {privacyMessage}
+              </p>
+            )}
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <fieldset className="space-y-3 rounded-lg border bg-gray-50 p-4" aria-busy={privacyLoading}>
+                <legend className="font-semibold">Consentimiento activo</legend>
+                <p className="text-sm text-gray-600">
+                  Política vigente: {privacy?.policy.version ?? '2024-10'} · Retención máxima: {privacy?.policy.retentionDays ?? 30} días.
+                </p>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={consentForm.wallet_processing}
+                    onChange={(e) =>
+                      setConsentForm((current) => ({ ...current, wallet_processing: e.target.checked }))
+                    }
+                  />
+                  Permitir procesamiento de wallet para controles antifraude.
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={consentForm.user_id_processing}
+                    onChange={(e) =>
+                      setConsentForm((current) => ({ ...current, user_id_processing: e.target.checked }))
+                    }
+                  />
+                  Permitir uso del user_id para verificar elegibilidad.
+                </label>
+                <div className="space-y-1 text-sm">
+                  <label className="font-medium" htmlFor="retention-days">
+                    Días de retención (máx. {privacy?.policy.retentionDays ?? 30})
+                  </label>
+                  <input
+                    id="retention-days"
+                    type="number"
+                    min={1}
+                    max={privacy?.policy.retentionDays ?? 30}
+                    value={consentForm.retention_days}
+                    onChange={(e) =>
+                      setConsentForm((current) => ({
+                        ...current,
+                        retention_days: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full rounded border px-3 py-2"
+                    aria-describedby="retention-hint"
+                  />
+                  <p id="retention-hint" className="text-xs text-gray-600">
+                    Puedes reducir la retención; nunca superará el máximo comunicado.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={saveConsent}
+                  className="w-full rounded-md bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+                  disabled={privacyLoading}
+                >
+                  Guardar consentimiento
+                </button>
+              </fieldset>
+
+              <div className="space-y-3 rounded-lg border bg-gray-50 p-4">
+                <h4 className="font-semibold">Ejercer derechos GDPR/CCPA</h4>
+                <p className="text-sm text-gray-600">
+                  Exporta o elimina tus datos (perfil, progreso, pagos, consents) bajo solicitud. Se requiere sesión activa.
+                </p>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={exportUserData}
+                    className="w-full rounded-md border border-blue-600 px-4 py-2 text-blue-700 hover:bg-blue-50"
+                  >
+                    Exportar datos en JSON
+                  </button>
+                  {exportStatus && (
+                    <p className="text-xs text-gray-700" role="status" aria-live="polite">
+                      {exportStatus}
+                    </p>
+                  )}
+                  {exportUrl && (
+                    <a
+                      href={exportUrl}
+                      download="miniappworld-user-data.json"
+                      className="inline-block text-sm text-blue-700 underline"
+                    >
+                      Descargar copia
+                    </a>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    onClick={deleteUserData}
+                    disabled={erasing}
+                    className="w-full rounded-md border border-red-600 px-4 py-2 text-red-700 hover:bg-red-50 disabled:opacity-60"
+                    aria-busy={erasing}
+                  >
+                    {erasing ? 'Eliminando...' : 'Borrar todos mis datos'}
+                  </button>
+                  <p className="text-xs text-gray-700">
+                    Eliminamos wallet, user_id, progreso y consents del almacenamiento local en menos de 30 días.
+                  </p>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
       )}

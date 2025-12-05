@@ -100,6 +100,16 @@ export type GameProgressRecord = {
   updated_at: string;
 };
 
+export type UserConsentRecord = {
+  user_id: string;
+  consented_at: string;
+  policy_version: string;
+  wallet_processing: boolean;
+  user_id_processing: boolean;
+  retention_days: number;
+  channels?: string[];
+};
+
 export type DatabaseShape = {
   world_id_verifications: WorldIdVerificationRecord[];
   payments: PaymentRecord[];
@@ -109,6 +119,7 @@ export type DatabaseShape = {
   tournament_results: TournamentResultRecord[];
   tournament_payouts: TournamentPayoutRecord[];
   game_progress: GameProgressRecord[];
+  user_consents: UserConsentRecord[];
 };
 
 const DATA_ROOT = process.env.STATE_DIRECTORY ?? path.join(process.cwd(), 'data');
@@ -278,6 +289,22 @@ type ScopedError = Error & { code?: string };
 const worldIdCacheByNullifier = new Map<string, CachedVerification>();
 const worldIdCacheBySession = new Map<string, CachedVerification>();
 const worldIdCacheByUser = new Map<string, CachedVerification>();
+
+function clearWorldIdCacheForUser(userId: string) {
+  worldIdCacheByUser.delete(userId);
+
+  for (const [key, cached] of worldIdCacheByNullifier.entries()) {
+    if (cached.record.user_id === userId) {
+      worldIdCacheByNullifier.delete(key);
+    }
+  }
+
+  for (const [key, cached] of worldIdCacheBySession.entries()) {
+    if (cached.record.user_id === userId) {
+      worldIdCacheBySession.delete(key);
+    }
+  }
+}
 
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
 export type AuditLogEntry = {
@@ -739,28 +766,18 @@ async function ensureDbFile(): Promise<void> {
     await fs.access(DB_PATH);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      try {
-        const journalContent = await fs.readFile(JOURNAL_PATH, 'utf8');
-        await fs.writeFile(DB_PATH, journalContent, 'utf8');
-        console.warn('[database] Base de datos restaurada desde journal al no encontrarse archivo principal');
-      } catch (journalError) {
-        const journalCode = (journalError as NodeJS.ErrnoException).code;
-        if (journalCode !== 'ENOENT') {
-          console.error('[database] No se pudo restaurar desde journal inexistente', journalError);
-        }
-
-        const emptyDb: DatabaseShape = {
-          world_id_verifications: [],
-          payments: [],
-          payment_status_history: [],
-          tournaments: [],
-          tournament_participants: [],
-          tournament_results: [],
-          tournament_payouts: [],
-          game_progress: [],
-        };
-        await fs.writeFile(DB_PATH, serializeDb(emptyDb), 'utf8');
-      }
+      const emptyDb: DatabaseShape = {
+        world_id_verifications: [],
+        payments: [],
+        payment_status_history: [],
+        tournaments: [],
+        tournament_participants: [],
+        tournament_results: [],
+        tournament_payouts: [],
+        game_progress: [],
+        user_consents: [],
+      };
+      await fs.writeFile(DB_PATH, serializeDb(emptyDb), 'utf8');
     } else {
       throw error;
     }
@@ -782,6 +799,7 @@ async function loadDb(): Promise<DatabaseShape> {
     tournament_participants: parsed.tournament_participants ?? [],
     tournament_results: parsed.tournament_results ?? [],
     game_progress: parsed.game_progress ?? [],
+    user_consents: parsed.user_consents ?? [],
   } satisfies DatabaseShape;
 }
 
@@ -1582,6 +1600,152 @@ export async function upsertGameProgress(
 
 export async function listGameProgressByUser(userId: string): Promise<GameProgressRecord[]> {
   return withDbSnapshot((db) => db.game_progress.filter((entry) => entry.user_id === userId));
+}
+
+export async function findUserConsent(userId: string) {
+  return withDbSnapshot((db) => db.user_consents.find((entry) => entry.user_id === userId));
+}
+
+export async function upsertUserConsent(
+  record: Omit<UserConsentRecord, 'consented_at'>,
+  context: AuditContext = {}
+): Promise<UserConsentRecord> {
+  const consent = await withDbTransaction(
+    async (db) => {
+      const existingIndex = db.user_consents.findIndex((entry) => entry.user_id === record.user_id);
+      const payload: UserConsentRecord = {
+        ...record,
+        consented_at: new Date().toISOString(),
+      };
+
+      if (existingIndex >= 0) {
+        db.user_consents[existingIndex] = { ...db.user_consents[existingIndex], ...payload };
+        return db.user_consents[existingIndex];
+      }
+
+      db.user_consents.push(payload);
+      return payload;
+    },
+    { scope: 'user_consents', lockKeys: [`user:${record.user_id}:consent`], isolationLevel: 'repeatable_read' }
+  );
+
+  await appendAuditLog({
+    action: 'upsert_user_consent',
+    entity: 'user_consents',
+    entityId: record.user_id,
+    timestamp: consent.consented_at,
+    userId: context.userId ?? record.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: {
+      policy_version: record.policy_version,
+      retention_days: record.retention_days,
+    },
+  });
+
+  return consent;
+}
+
+export type UserDataExport = {
+  worldIdVerifications: WorldIdVerificationRecord[];
+  payments: PaymentRecord[];
+  paymentHistory: PaymentStatusHistoryRecord[];
+  tournaments: {
+    participants: TournamentParticipantRecord[];
+    results: TournamentResultRecord[];
+    payouts: TournamentPayoutRecord[];
+  };
+  gameProgress: GameProgressRecord[];
+  consent?: UserConsentRecord;
+};
+
+export async function exportUserDataset(userId: string): Promise<UserDataExport> {
+  return withDbSnapshot((db) => ({
+    worldIdVerifications: db.world_id_verifications.filter((entry) => entry.user_id === userId),
+    payments: db.payments.filter((entry) => entry.user_id === userId),
+    paymentHistory: db.payment_status_history.filter((entry) =>
+      db.payments.find((payment) => payment.payment_id === entry.payment_id && payment.user_id === userId)
+    ),
+    tournaments: {
+      participants: db.tournament_participants.filter((entry) => entry.user_id === userId),
+      results: db.tournament_results.filter((entry) => entry.user_id === userId),
+      payouts: db.tournament_payouts.filter((entry) => entry.user_id === userId),
+    },
+    gameProgress: db.game_progress.filter((entry) => entry.user_id === userId),
+    consent: db.user_consents.find((entry) => entry.user_id === userId),
+  }));
+}
+
+export async function deleteUserDataset(userId: string, context: AuditContext = {}) {
+  const outcome = await withDbTransaction(
+    async (db) => {
+      const before = {
+        worldId: db.world_id_verifications.length,
+        payments: db.payments.length,
+        paymentHistory: db.payment_status_history.length,
+        participants: db.tournament_participants.length,
+        results: db.tournament_results.length,
+        payouts: db.tournament_payouts.length,
+        gameProgress: db.game_progress.length,
+        consents: db.user_consents.length,
+      };
+
+      const userPaymentIds = new Set(
+        db.payments.filter((entry) => entry.user_id === userId).map((entry) => entry.payment_id)
+      );
+
+      db.world_id_verifications = db.world_id_verifications.filter((entry) => entry.user_id !== userId);
+      db.payments = db.payments.filter((entry) => entry.user_id !== userId);
+      db.payment_status_history = db.payment_status_history.filter(
+        (entry) => !userPaymentIds.has(entry.payment_id)
+      );
+      db.tournament_participants = db.tournament_participants.filter((entry) => entry.user_id !== userId);
+      db.tournament_results = db.tournament_results.filter((entry) => entry.user_id !== userId);
+      db.tournament_payouts = db.tournament_payouts.filter((entry) => entry.user_id !== userId);
+      db.game_progress = db.game_progress.filter((entry) => entry.user_id !== userId);
+      db.user_consents = db.user_consents.filter((entry) => entry.user_id !== userId);
+
+      const after = {
+        worldId: db.world_id_verifications.length,
+        payments: db.payments.length,
+        paymentHistory: db.payment_status_history.length,
+        participants: db.tournament_participants.length,
+        results: db.tournament_results.length,
+        payouts: db.tournament_payouts.length,
+        gameProgress: db.game_progress.length,
+        consents: db.user_consents.length,
+      };
+
+      return {
+        removed: {
+          worldId: before.worldId - after.worldId,
+          payments: before.payments - after.payments,
+          paymentHistory: before.paymentHistory - after.paymentHistory,
+          participants: before.participants - after.participants,
+          results: before.results - after.results,
+          payouts: before.payouts - after.payouts,
+          gameProgress: before.gameProgress - after.gameProgress,
+          consents: before.consents - after.consents,
+        },
+      };
+    },
+    { scope: 'user_deletion', isolationLevel: 'serializable', lockKeys: [`user:${userId}:erase`] }
+  );
+
+  clearWorldIdCacheForUser(userId);
+
+  await appendAuditLog({
+    action: 'delete_user_dataset',
+    entity: 'user',
+    entityId: userId,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? userId,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: outcome.removed,
+  });
+
+  return outcome;
 }
 
 export async function normalizeTournamentRecord(record: TournamentRecord): TournamentRecord {
