@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { validateSameOrigin } from '@/lib/security';
 
 type RateLimitEntry = {
   windowStart: number;
@@ -121,6 +122,13 @@ function logAudit(event: {
 export async function POST(req: NextRequest) {
   const clientIp = getClientIp(req);
   const providedKey = req.headers.get('x-api-key');
+
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: originCheck.reason });
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
 
   if (!isAuthenticated(req)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'auth_failed' });
