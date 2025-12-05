@@ -4,7 +4,6 @@ import {
   addParticipantRecord,
   appendLeaderboardEntry,
   getTournament,
-  incrementTournamentPool,
   participantExists,
   serializeTournament,
   validateTokenForTournament,
@@ -154,7 +153,7 @@ export async function POST(req: NextRequest, { params }: { params: { tournamentI
 
   await addParticipantRecord(tournament.tournamentId, userId, paymentReference, participantWallet);
 
-  const updatedTournament = await incrementTournamentPool(tournament);
+  const updatedTournament = (await getTournament(tournament.tournamentId)) ?? tournament;
   await appendLeaderboardEntry(tournament.tournamentId, {
     userId,
     username: username ?? 'Nuevo jugador',

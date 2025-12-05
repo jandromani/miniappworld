@@ -9,6 +9,7 @@ import {
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
+import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 
 function normalizeTokenAmount(value: unknown): bigint {
   const asString = typeof value === 'string' ? value : value?.toString?.();
@@ -360,6 +361,13 @@ export async function POST(req: NextRequest) {
       },
       { userId: storedPayment.user_id, sessionId }
     );
+
+    if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
+      const tournament = await getTournament(storedPayment.tournament_id);
+      if (tournament) {
+        await incrementTournamentPool(tournament);
+      }
+    }
 
     if (storedPayment.wallet_address) {
       const notificationResult = await sendNotification({
