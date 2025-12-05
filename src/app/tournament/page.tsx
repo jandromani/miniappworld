@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Tournament } from '@/lib/types';
 import { getActiveTournaments } from '@/lib/tournamentService';
 import { getTokenDecimalsByAddress, getTokenSymbolByAddress } from '@/lib/constants';
+import { SessionVerificationBar } from '@/components/SessionVerificationBar';
 
 const statusLabels: Record<Tournament['status'], string> = {
   upcoming: 'Próximo',
@@ -22,6 +23,7 @@ export default function TournamentPage() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const sessionId = useMemo(() => crypto.randomUUID(), []);
 
   useEffect(() => {
     const load = async () => {
@@ -41,21 +43,37 @@ export default function TournamentPage() {
 
   return (
     <main className="p-6 flex flex-col gap-6">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-bold">Torneos</h1>
-        <p className="text-gray-600">Compra tu buy-in, compite en 15 preguntas y escala al leaderboard.</p>
+      <header className="space-y-3">
+        <div className="space-y-2">
+          <h1 className="text-3xl font-bold">Torneos</h1>
+          <p className="text-gray-600">Compra tu buy-in, compite en 15 preguntas y escala al leaderboard.</p>
+        </div>
+
+        <SessionVerificationBar sessionId={sessionId} context="tournament" />
       </header>
 
-      {loading && <p>Cargando torneos...</p>}
-      {error && <p className="text-red-600">{error}</p>}
+      {loading && (
+        <p role="status" aria-live="polite">
+          Cargando torneos...
+        </p>
+      )}
+      {error && (
+        <p className="text-red-600" role="alert" aria-live="assertive">
+          {error}
+        </p>
+      )}
 
       {!loading && !error && tournaments.length === 0 && (
         <p className="text-gray-500">No hay torneos disponibles por ahora.</p>
       )}
 
-      <section className="grid gap-4 md:grid-cols-2">
+      <section className="grid gap-4 md:grid-cols-2" aria-label="Lista de torneos">
         {tournaments.map((tournament) => (
-          <article key={tournament.tournamentId} className="rounded-xl border p-4 shadow-sm">
+          <article
+            key={tournament.tournamentId}
+            className="rounded-xl border p-4 shadow-sm transition focus-within:ring-2 focus-within:ring-blue-500"
+            tabIndex={-1}
+          >
             <div className="flex items-start justify-between">
               <div>
                 <h2 className="text-xl font-semibold">{tournament.name}</h2>

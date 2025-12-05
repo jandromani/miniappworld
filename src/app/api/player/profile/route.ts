@@ -1,35 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { findWorldIdVerificationBySession } from '@/lib/database';
+import { validateCsrf } from '@/lib/security';
 import { updatePlayerProfile } from '@/lib/server/playerStatsStore';
+import { validateHttpUrl, validateUserText } from '@/lib/validation';
 
-function validateAlias(alias?: string) {
-  if (!alias) return true;
-  const trimmed = alias.trim();
-  return trimmed.length >= 3 && trimmed.length <= 32;
-}
-
-function validateAvatarUrl(url?: string) {
-  if (!url) return true;
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
-  } catch (error) {
-    console.warn('[player-profile] URL de avatar inválida', error);
-    return false;
-  }
-}
+const SESSION_COOKIE = 'session_token';
 
 export async function PATCH(req: NextRequest) {
-  const session = req.cookies.get('session_token');
-
-  if (!session) {
-    return NextResponse.json({ error: 'Usuario no verificado' }, { status: 401 });
+  const csrfCheck = validateCsrf(req);
+  if (!csrfCheck.valid) {
+    return NextResponse.json({ error: 'CSRF inválido' }, { status: 403 });
   }
 
-  const identity = await findWorldIdVerificationBySession(session.value);
-  if (!identity) {
-    return NextResponse.json({ error: 'Sesión expirada o inválida' }, { status: 401 });
+  const session = req.cookies.get(SESSION_COOKIE);
+
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
+
+  const { identity } = sessionResult;
 
   const body = await req.json();
   const { alias, avatarUrl } = body as { alias?: string; avatarUrl?: string };
@@ -41,22 +30,29 @@ export async function PATCH(req: NextRequest) {
     );
   }
 
-  if (!validateAlias(alias)) {
-    return NextResponse.json(
-      { error: 'El alias debe tener entre 3 y 32 caracteres' },
-      { status: 400 }
-    );
+  let sanitizedAlias: string | undefined;
+  if (alias !== undefined) {
+    const aliasValidation = validateUserText(alias, { field: 'El alias', min: 3, max: 32 });
+    if (!aliasValidation.valid) {
+      return NextResponse.json({ error: aliasValidation.error }, { status: 400 });
+    }
+    sanitizedAlias = aliasValidation.sanitized;
   }
 
-  if (!validateAvatarUrl(avatarUrl)) {
-    return NextResponse.json(
-      { error: 'URL de avatar inválida. Usa http(s)://' },
-      { status: 400 }
-    );
+  let sanitizedAvatar: string | undefined;
+  if (avatarUrl !== undefined) {
+    const avatarValidation = validateHttpUrl(avatarUrl);
+    if (!avatarValidation.valid) {
+      return NextResponse.json({ error: avatarValidation.error }, { status: 400 });
+    }
+    sanitizedAvatar = avatarValidation.sanitized;
   }
 
   try {
-    const updated = await updatePlayerProfile(identity.user_id, { alias, avatarUrl });
+    const updated = await updatePlayerProfile(identity.user_id, {
+      alias: sanitizedAlias,
+      avatarUrl: sanitizedAvatar,
+    });
     return NextResponse.json(updated);
   } catch (error) {
     console.error('[player-profile] Error al actualizar perfil', error);

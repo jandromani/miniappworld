@@ -4,26 +4,22 @@ import {
   addParticipantRecord,
   getTournament,
   participantExists,
-  updateTournamentPoolAndLeaderboardEntry,
   serializeTournament,
-  validateTokenForTournament,
 } from '@/lib/server/tournamentData';
 import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
   findWorldIdVerificationByUser,
-  isLocalStorageDisabled,
   recordAuditEvent,
 } from '@/lib/database';
-import {
-  isSupportedTokenAddress,
-  isSupportedTokenSymbol,
-  normalizeTokenIdentifier,
-} from '@/lib/tokenNormalization';
+import { isSupportedTokenAddress, isSupportedTokenSymbol, normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 import { rateLimit } from '@/lib/rateLimit';
 import { sendNotification } from '@/lib/notificationService';
+import { validateCsrf, validateSameOrigin } from '@/lib/security';
+import { sanitizeUserText } from '@/lib/validation';
+import { requireActiveSession } from '@/lib/sessionValidation';
 
-const SESSION_COOKIE = 'session_token';
+const PATH = 'join_tournament';
 
 type JoinParams = { tournamentId?: string; id?: string };
 
@@ -32,6 +28,31 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
   const rate = await rateLimit(rateKey);
   if (!rate.allowed) {
     return NextResponse.json({ error: 'Límite de solicitudes alcanzado' }, { status: 429 });
+  }
+
+  const originCheck = validateSameOrigin(req);
+  const csrfCheck = validateCsrf(req);
+  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
+
+  if (!originCheck.valid || !csrfCheck.valid) {
+    await recordAuditEvent({
+      action: 'join_tournament',
+      entity: 'tournaments',
+      sessionId: sessionToken,
+      status: 'error',
+      details: { reason: originCheck.valid ? csrfCheck.reason : originCheck.reason },
+    });
+    return NextResponse.json({ error: 'Solicitud no autorizada' }, { status: 403 });
+  }
+
+  if (!sessionToken) {
+    await recordAuditEvent({
+      action: 'join_tournament',
+      entity: 'tournaments',
+      status: 'error',
+      details: { reason: 'missing_session_token' },
+    });
+    return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
   }
 
   const tournamentId = params.tournamentId ?? params.id;
@@ -47,48 +68,30 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
   }
 
   const { token, amount, userId: bodyUserId, username, walletAddress, score, paymentReference } = await req.json();
-  const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
-  if (!sessionToken) {
-    await recordAuditEvent({
-      action: 'join_tournament',
-      entity: 'tournaments',
-      entityId: tournamentId,
-      status: 'error',
-      details: { reason: 'missing_session_token', paymentReference },
-    });
-
+  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
   if (!sessionIdentity) {
     await recordAuditEvent({
       action: 'join_tournament',
       entity: 'tournaments',
       entityId: tournamentId,
-      sessionId: sessionToken,
-      status: 'error',
-      details: { reason: 'session_not_found', paymentReference },
-    });
-    return NextResponse.json({ error: 'La sesión no es válida o expiró' }, { status: 401 });
-  }
+      details: { paymentReference },
+    },
+  });
 
-  if (bodyUserId && bodyUserId !== sessionIdentity.user_id) {
-    return NextResponse.json({ error: 'El usuario no coincide con la sesión activa' }, { status: 403 });
+  if ('error' in sessionResult) {
+    return sessionResult.error;
   }
 
   const userId = sessionIdentity.user_id;
-
   const worldId = await findWorldIdVerificationByUser(userId);
 
-  if (!worldId) {
-    return NextResponse.json({ error: 'World ID no verificado para este usuario' }, { status: 403 });
+  if (bodyUserId && bodyUserId !== identity.user_id) {
+    return NextResponse.json({ error: 'El usuario no coincide con la sesión activa' }, { status: 403 });
   }
 
   if (!token || amount === undefined || !paymentReference) {
     return NextResponse.json({ error: 'Token, monto y referencia de pago son obligatorios' }, { status: 400 });
-  }
-
-  const numericAmount = Number(amount);
-  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-    return NextResponse.json({ error: 'El monto debe ser un número positivo' }, { status: 400 });
   }
 
   if (tournament.status !== 'upcoming') {
@@ -99,12 +102,37 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'No hay cupos disponibles' }, { status: 400 });
   }
 
-  if (await participantExists(tournament.tournamentId, userId)) {
+  if (await participantExists(tournament.tournamentId, identity.user_id)) {
     return NextResponse.json({ error: 'El usuario ya está inscrito en este torneo' }, { status: 400 });
   }
 
-    console.error('[join_tournament] Error inesperado', error);
-    return NextResponse.json({ error: 'Error interno al procesar la inscripción' }, { status: 500 });
+  if (typeof token !== 'string' || (!isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token))) {
+    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
+  }
+
+  const normalizedToken = normalizeTokenIdentifier(token);
+  const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
+  if (!tokenKey || !SUPPORTED_TOKENS[tokenKey]) {
+    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
+  }
+
+  let payment;
+  try {
+    payment = await findPaymentByReference(paymentReference);
+  } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json({ error: 'Almacenamiento local no disponible' }, { status: 503 });
+    }
+    console.error('[join_tournament] Error consultando pago', error);
+    return NextResponse.json({ error: 'No se pudo validar el pago' }, { status: 500 });
+  }
+
+  if (!payment) {
+    return NextResponse.json({ error: 'Referencia de pago no encontrada' }, { status: 404 });
+  }
+
+  if (!payment) {
+    return NextResponse.json({ error: 'Pago no encontrado' }, { status: 404 });
   }
 
   if (payment.status !== 'confirmed') {
@@ -119,20 +147,16 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'La referencia de pago no pertenece a esta sesión' }, { status: 403 });
   }
 
-  if (payment.user_id && payment.user_id !== worldId.user_id) {
+  if (payment.user_id && payment.user_id !== identity.user_id) {
     return NextResponse.json({ error: 'El pago pertenece a otro usuario' }, { status: 403 });
   }
 
-  if (payment.nullifier_hash && payment.nullifier_hash !== worldId.nullifier_hash) {
+  if (payment.nullifier_hash && payment.nullifier_hash !== identity.nullifier_hash) {
     return NextResponse.json({ error: 'La verificación de identidad no coincide con el pago' }, { status: 403 });
   }
 
   const paymentWallet = payment.wallet_address?.toLowerCase();
   const verifiedWallet = worldId.wallet_address?.toLowerCase();
-
-  if (paymentWallet && !verifiedWallet) {
-    return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
-  }
 
   if (paymentWallet && verifiedWallet && paymentWallet !== verifiedWallet) {
     return NextResponse.json({ error: 'La wallet verificada no coincide con la del pago' }, { status: 403 });
@@ -144,55 +168,38 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
 
   if (walletAddress && verifiedWallet && walletAddress.toLowerCase() !== verifiedWallet) {
     return NextResponse.json({ error: 'La wallet proporcionada no coincide con la verificada' }, { status: 403 });
-  if (typeof token !== 'string' || (!isSupportedTokenSymbol(token) && !isSupportedTokenAddress(token))) {
-    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
   }
 
-  const normalizedToken = normalizeTokenIdentifier(token);
-  const tokenKey = resolveTokenFromAddress(normalizedToken) as SupportedToken;
-  if (!tokenKey || !SUPPORTED_TOKENS[tokenKey]) {
-    return NextResponse.json({ error: 'Token no soportado' }, { status: 400 });
-  }
-
-  const validation = validateTokenForTournament(tournament, tokenKey, payment.token_amount);
+  const validation = validateTokenForTournament(tournament, tokenKey, payment.token_amount ?? amount);
   if (!validation.valid) {
     return NextResponse.json({ error: validation.message }, { status: 400 });
   }
 
-  const refreshedTournament = await getTournament(tournament.tournamentId);
-
-  if (!refreshedTournament) {
-    return NextResponse.json({ error: 'Torneo no encontrado' }, { status: 404 });
-  }
-
-  if (refreshedTournament.currentPlayers >= refreshedTournament.maxPlayers) {
-    return NextResponse.json({ error: 'No hay cupos disponibles' }, { status: 400 });
-  }
-
-  await addParticipantRecord(tournament.tournamentId, userId, paymentReference);
   const participantWallet = walletAddress ?? worldId.wallet_address ?? payment.wallet_address;
 
   await addParticipantRecord(tournament.tournamentId, userId, paymentReference, participantWallet);
 
+  const sanitizedUsername = sanitizeUserText(username) ?? 'Nuevo jugador';
   const updatedTournament = (await getTournament(tournament.tournamentId)) ?? tournament;
-  await appendLeaderboardEntry(tournament.tournamentId, {
-    userId,
-    username: username ?? 'Nuevo jugador',
-    walletAddress: walletAddress ?? payment.wallet_address ?? SUPPORTED_TOKENS[tokenKey].address,
-    score: Number.isFinite(score) ? Number(score) : 0,
-  });
 
-  if (walletAddress) {
+  if (participantWallet) {
     await sendNotification({
-      walletAddresses: [walletAddress],
+      walletAddresses: [participantWallet],
       title: 'Inscripción confirmada',
       message: 'Te has unido al torneo correctamente',
       miniAppPath: `/tournament/${tournament.tournamentId}`,
     });
-  }
+  } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json(
+        { error: 'Persistencia local deshabilitada. Configure un directorio compartido o servicio de storage.' },
+        { status: 503 }
+      );
+    }
 
   return NextResponse.json({
     success: true,
     tournament: await serializeTournament(updatedTournament),
+    participant: { userId, username: sanitizedUsername, walletAddress: participantWallet, score },
   });
 }

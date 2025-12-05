@@ -1,8 +1,8 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { MiniKit } from '@worldcoin/minikit-js';
-
+import { SessionVerificationBar } from '@/components/SessionVerificationBar';
+import { sendNotificationHaptics } from '@/lib/haptics';
 import { useHapticsPreference } from '@/lib/useHapticsPreference';
 
 type MockQuestion = {
@@ -34,18 +34,7 @@ export default function GamePage() {
   const { hapticsEnabled } = useHapticsPreference();
 
   const sendHaptics = useCallback(
-    async (isCorrect: boolean) => {
-      if (!hapticsEnabled) return;
-
-      try {
-        await MiniKit.commandsAsync.sendHapticFeedback({
-          hapticsType: 'notification',
-          style: isCorrect ? 'success' : 'error',
-        });
-      } catch (error) {
-        console.warn('No se pudo enviar feedback háptico', error);
-      }
-    },
+    async (isCorrect: boolean) => sendNotificationHaptics(isCorrect ? 'success' : 'error', hapticsEnabled),
     [hapticsEnabled],
   );
 

@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { findWorldIdVerificationByUser } from '../database';
+import { sanitizeUserText } from '../validation';
 
 export type PlayerStats = {
   userId: string;
@@ -102,7 +103,7 @@ export async function updatePlayerProfile(
 
   const player = store.players[playerIndex];
 
-  const sanitizedAlias = updates.alias?.trim();
+  const sanitizedAlias = sanitizeUserText(updates.alias);
   const sanitizedAvatar = updates.avatarUrl?.trim();
 
   if (sanitizedAlias) {
