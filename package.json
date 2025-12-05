@@ -21,6 +21,7 @@
     "@upstash/ratelimit": "^1.2.0",
     "@upstash/redis": "^1.31.5",
     "ethers": "^6.13.4",
+    "eruda": "^3.0.0",
     "next": "14.2.5",
     "prom-client": "^15.1.2",
     "react": "18.3.1",
