@@ -6,6 +6,7 @@ import {
   findWorldIdVerificationByUser,
   insertWorldIdVerification,
 } from '@/lib/database';
+import { DEFAULT_WORLD_ID_ACTION, isValidWorldIdAction, type WorldIdAction } from '@/lib/worldId';
 
 const SESSION_COOKIE = 'session_token';
 
@@ -44,6 +45,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const actionCandidate = action ?? DEFAULT_WORLD_ID_ACTION;
+
+    if (typeof actionCandidate !== 'string' || !isValidWorldIdAction(actionCandidate)) {
+      console.warn('[verify-world-id] Acción no permitida', { action });
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Acción de verificación no permitida',
+        },
+        { status: 400 }
+      );
+    }
+
+    const actionName = actionCandidate as WorldIdAction;
+
     const existingIdentity = await findWorldIdVerificationByNullifier(nullifier_hash);
 
     if (existingIdentity) {
@@ -77,8 +93,6 @@ export async function POST(req: NextRequest) {
         );
       }
     }
-
-    const actionName = action ?? 'trivia_game_access';
 
     const verifyRes = await verifyCloudProof(
       { proof, nullifier_hash, merkle_root, verification_level: verification_level ?? 'orb' },
