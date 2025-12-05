@@ -55,7 +55,6 @@ export async function POST(req: NextRequest) {
 
   const verifiedIdentity = sessionIdentity;
   const verifiedUserId = sessionIdentity.user_id;
-  const verifiedWalletAddress = sessionIdentity.wallet_address;
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -107,7 +106,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ success: true, reference, tournamentId: existingPayment.tournament_id });
+    return NextResponse.json({
+      success: true,
+      reference,
+      tournamentId: existingPayment.tournament_id,
+      userId: existingPayment.user_id ?? sessionIdentity.user_id,
+      walletAddress: existingPayment.wallet_address ?? verifiedWalletAddress,
+    });
   }
 
   const normalizedToken = token
