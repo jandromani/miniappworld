@@ -1,9 +1,20 @@
-import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
+import { validateSameOrigin } from '@/lib/security';
+import { createRateLimiter } from '@/lib/rateLimit';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
+import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
+import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
 
 type RateLimitEntry = {
   windowStart: number;
   count: number;
+};
+
+type AuthResult = {
+  providedKey?: string | null;
+  role?: string;
+  authorized: boolean;
 };
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -16,6 +27,11 @@ const nonceCache = new Map<string, number>();
 function hashKey(key: string) {
   return crypto.createHash('sha256').update(key).digest('hex');
 }
+const notificationRateLimiter = createRateLimiter({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  maxRequests: RATE_LIMIT_MAX_REQUESTS,
+  prefix: 'notifications',
+});
 
 function getAllowlistFromEnv(value?: string | null) {
   return (value ?? '')
@@ -79,40 +95,24 @@ function validatePayload(body: any) {
   return errors;
 }
 
-function isAuthenticated(req: NextRequest) {
-  const configuredKey = process.env.NOTIFICATIONS_API_KEY;
+async function authenticate(req: NextRequest): Promise<AuthResult> {
   const providedKey = req.headers.get('x-api-key');
+  const resolved = await resolveNotificationApiKey(providedKey);
 
-  if (!configuredKey || !providedKey) {
-    return false;
-  }
-
-  try {
-    return crypto.timingSafeEqual(Buffer.from(providedKey), Buffer.from(configuredKey));
-  } catch (error) {
-    return false;
-  }
+  return {
+    providedKey,
+    role: resolved?.role,
+    authorized: Boolean(resolved),
+  };
 }
 
 function checkRateLimit(apiKey: string) {
-  const now = Date.now();
-  const current = rateLimitByKey.get(apiKey);
-
-  if (!current || now - current.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    rateLimitByKey.set(apiKey, { windowStart: now, count: 1 });
-    return true;
-  }
-
-  if (current.count < RATE_LIMIT_MAX_REQUESTS) {
-    rateLimitByKey.set(apiKey, { ...current, count: current.count + 1 });
-    return true;
-  }
-
-  return false;
+  return notificationRateLimiter.limit(apiKey);
 }
 
-function logAudit(event: {
+async function logAudit(event: {
   apiKey?: string | null;
+  role?: string;
   walletCount?: number;
   clientIp?: string;
   origin?: string | null;
@@ -120,12 +120,16 @@ function logAudit(event: {
   success: boolean;
   reason?: string;
 }) {
-  const apiKeyHash = event.apiKey ? hashKey(event.apiKey) : 'missing';
+  const apiKeyHash = event.apiKey ? hashNotificationApiKey(event.apiKey) : 'missing';
   const timestamp = new Date().toISOString();
 
-  console.log('[notification_audit]', {
+  logApiEvent(event.success ? 'info' : 'warn', {
+    path: 'send-notification',
+    event: 'notification_audit',
+  await appendNotificationAuditEvent({
     timestamp,
     apiKeyHash,
+    role: event.role,
     walletCount: event.walletCount,
     clientIp: event.clientIp,
     origin: event.origin,
@@ -172,6 +176,11 @@ function isNonceValid(nonce: string) {
 }
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const clientIp = getClientIp(req);
   const providedKey = req.headers.get('x-api-key');
   const origin = req.headers.get('origin');
@@ -210,6 +219,51 @@ export async function POST(req: NextRequest) {
 
   if (!checkRateLimit(providedKey!)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'rate_limited' });
+  const authResult = await authenticate(req);
+  const providedKey = authResult.providedKey;
+
+  const originCheck = validateSameOrigin(req);
+
+  if (!originCheck.valid) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: originCheck.reason });
+    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
+  }
+
+  if (!isAuthenticated(req)) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'auth_failed' });
+    return apiErrorResponse('UNAUTHORIZED', {
+      message: 'No autorizado',
+      path: 'send-notification',
+      details: { reason: 'auth_failed' },
+    });
+  if (!authResult.authorized || !providedKey) {
+    await logAudit({
+      apiKey: providedKey,
+      role: authResult.role,
+      walletCount: 0,
+      clientIp,
+      success: false,
+      reason: 'auth_failed',
+    });
+    return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
+  }
+
+  const rateLimitResult = await checkRateLimit(providedKey!);
+  if (!rateLimitResult.allowed) {
+    logAudit({ apiKey: providedKey, walletCount: 0, clientIp, success: false, reason: 'rate_limited' });
+    return apiErrorResponse('RATE_LIMITED', {
+      message: 'Límite de solicitudes excedido, intente más tarde',
+      path: 'send-notification',
+    });
+  if (!checkRateLimit(providedKey)) {
+    await logAudit({
+      apiKey: providedKey,
+      role: authResult.role,
+      walletCount: 0,
+      clientIp,
+      success: false,
+      reason: 'rate_limited',
+    });
     return NextResponse.json({ success: false, message: 'Límite de solicitudes excedido, intente más tarde' }, { status: 429 });
   }
 
@@ -217,8 +271,9 @@ export async function POST(req: NextRequest) {
   const validationErrors = validatePayload(body);
 
   if (validationErrors.length > 0) {
-    logAudit({
+    await logAudit({
       apiKey: providedKey,
+      role: authResult.role,
       walletCount: Array.isArray(body?.walletAddresses) ? body.walletAddresses.length : 0,
       clientIp,
       origin,
@@ -226,7 +281,11 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: `validation_failed:${validationErrors.join('|')}`,
     });
-    return NextResponse.json({ success: false, message: validationErrors.join('; ') }, { status: 400 });
+    return apiErrorResponse('INVALID_PAYLOAD', {
+      message: validationErrors.join('; '),
+      path: 'send-notification',
+      details: { validationErrors },
+    });
   }
 
   const { walletAddresses, title, message, miniAppPath } = body;
@@ -282,6 +341,13 @@ export async function POST(req: NextRequest) {
       origin,
       fingerprint,
       success: true,
+    await logAudit({ apiKey: providedKey, role: authResult.role, walletCount: walletAddresses.length, clientIp, success: true });
+
+    logApiEvent('info', {
+      path: 'send-notification',
+      action: 'dispatch',
+      walletCount: walletAddresses.length,
+      status: response.status,
     });
 
     return NextResponse.json(result, { status: response.ok ? 200 : response.status });
@@ -295,6 +361,13 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'upstream_error',
     });
+    logAudit({ apiKey: providedKey, walletCount: walletAddresses.length, clientIp, success: false, reason: 'upstream_error' });
+    return apiErrorResponse('UPSTREAM_ERROR', {
+      message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
+      path: 'send-notification',
+      details: { error: (error as Error)?.message },
+    });
+    await logAudit({ apiKey: providedKey, role: authResult.role, walletCount: walletAddresses.length, clientIp, success: false, reason: 'upstream_error' });
     console.error('Error enviando notificación al servicio protegido', error);
 
     return NextResponse.json(
