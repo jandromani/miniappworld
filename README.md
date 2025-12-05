@@ -16,6 +16,14 @@ npm run build
 npm run start
 ```
 
+## Auditoría y rotación de logs
+- El archivo `data/audit.log` rota automáticamente cuando cambia el día o al alcanzar el tamaño configurado (5 MB por defecto, puedes ajustar con `AUDIT_LOG_MAX_SIZE_BYTES`).
+- Desactiva la rotación diaria con `AUDIT_LOG_ROTATE_DAILY=false` si solo quieres rotar por tamaño.
+- Reenvío opcional a servicios externos:
+  - `AUDIT_LOG_HTTP_ENDPOINT` (+ `AUDIT_LOG_HTTP_AUTHORIZATION`): envía cada entrada como `POST` JSON, pensado para ingestas HTTP (ELK, webhooks).
+  - `AUDIT_LOG_CLOUDWATCH_GROUP` y `AUDIT_LOG_CLOUDWATCH_STREAM` (+ `AWS_REGION`): publica las entradas en CloudWatch Logs, creando el grupo/stream si no existen.
+- Controla el timeout del reenvío con `AUDIT_LOG_FORWARD_TIMEOUT_MS` (4s por defecto).
+
 ## Configuración de MiniKit
 Define en `.env`:
 - `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.

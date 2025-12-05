@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import { normalizeTokenIdentifier } from './tokenNormalization';
+import type { CloudWatchLogsClient } from '@aws-sdk/client-cloudwatch-logs';
 
 export type PaymentStatus = 'pending' | 'confirmed' | 'failed';
 
@@ -86,9 +87,19 @@ export type DatabaseShape = {
 const DB_PATH = path.join(process.cwd(), 'data', 'database.json');
 const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
 const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
+const AUDIT_LOG_MAX_SIZE_BYTES = Number(process.env.AUDIT_LOG_MAX_SIZE_BYTES ?? 5 * 1024 * 1024);
+const AUDIT_LOG_ROTATE_DAILY = process.env.AUDIT_LOG_ROTATE_DAILY !== 'false';
+const AUDIT_LOG_HTTP_ENDPOINT = process.env.AUDIT_LOG_HTTP_ENDPOINT;
+const AUDIT_LOG_HTTP_AUTHORIZATION = process.env.AUDIT_LOG_HTTP_AUTHORIZATION;
+const AUDIT_LOG_FORWARD_TIMEOUT_MS = Number(process.env.AUDIT_LOG_FORWARD_TIMEOUT_MS ?? 4000);
+const AUDIT_LOG_CLOUDWATCH_GROUP = process.env.AUDIT_LOG_CLOUDWATCH_GROUP;
+const AUDIT_LOG_CLOUDWATCH_STREAM = process.env.AUDIT_LOG_CLOUDWATCH_STREAM ?? 'miniapp-audit';
 const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
+
+let cloudWatchClient: CloudWatchLogsClient | undefined;
+let cloudWatchSequenceToken: string | undefined;
 
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
 export type AuditLogEntry = {
@@ -171,11 +182,146 @@ async function withDbLock<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+function isSameUtcDay(a: Date, b: Date) {
+  return (
+    a.getUTCFullYear() === b.getUTCFullYear() &&
+    a.getUTCMonth() === b.getUTCMonth() &&
+    a.getUTCDate() === b.getUTCDate()
+  );
+}
+
+async function rotateAuditLogIfNeeded() {
+  try {
+    const stats = await fs.stat(AUDIT_LOG_PATH);
+    const now = new Date();
+    const sizeExceeded = stats.size >= AUDIT_LOG_MAX_SIZE_BYTES;
+    const dayChanged = AUDIT_LOG_ROTATE_DAILY && !isSameUtcDay(now, new Date(stats.mtime));
+
+    if (!sizeExceeded && !dayChanged) {
+      return;
+    }
+
+    const timestamp = now.toISOString().replace(/[:.]/g, '-');
+    const rotatedPath = path.join(
+      path.dirname(AUDIT_LOG_PATH),
+      `${path.basename(AUDIT_LOG_PATH, '.log')}-${timestamp}.log`
+    );
+
+    await withRetries(() => fs.rename(AUDIT_LOG_PATH, rotatedPath));
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.error('[database] No se pudo rotar audit.log', error);
+    }
+  }
+}
+
+async function forwardAuditLogToHttp(entry: AuditLogEntry) {
+  if (!AUDIT_LOG_HTTP_ENDPOINT) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUDIT_LOG_FORWARD_TIMEOUT_MS);
+
+  try {
+    await fetch(AUDIT_LOG_HTTP_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(AUDIT_LOG_HTTP_AUTHORIZATION ? { Authorization: AUDIT_LOG_HTTP_AUTHORIZATION } : {}),
+      },
+      body: JSON.stringify(entry),
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+  } catch (error) {
+    console.error('[database] No se pudo reenviar auditoría (HTTP)', error);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function forwardAuditLogToCloudWatch(entry: AuditLogEntry) {
+  if (!AUDIT_LOG_CLOUDWATCH_GROUP) return;
+
+  const {
+    CloudWatchLogsClient,
+    CreateLogGroupCommand,
+    CreateLogStreamCommand,
+    DescribeLogStreamsCommand,
+    PutLogEventsCommand,
+  } = await import('@aws-sdk/client-cloudwatch-logs');
+
+  cloudWatchClient ??= new CloudWatchLogsClient({ region: process.env.AWS_REGION ?? 'us-east-1' });
+
+  try {
+    await cloudWatchClient.send(new CreateLogGroupCommand({ logGroupName: AUDIT_LOG_CLOUDWATCH_GROUP }));
+  } catch (error) {
+    if ((error as { name?: string }).name !== 'ResourceAlreadyExistsException') {
+      console.error('[database] CloudWatch: error creando log group', error);
+      return;
+    }
+  }
+
+  try {
+    await cloudWatchClient.send(
+      new CreateLogStreamCommand({
+        logGroupName: AUDIT_LOG_CLOUDWATCH_GROUP,
+        logStreamName: AUDIT_LOG_CLOUDWATCH_STREAM,
+      })
+    );
+  } catch (error) {
+    if ((error as { name?: string }).name !== 'ResourceAlreadyExistsException') {
+      console.error('[database] CloudWatch: error creando log stream', error);
+      return;
+    }
+  }
+
+  if (!cloudWatchSequenceToken) {
+    try {
+      const describe = await cloudWatchClient.send(
+        new DescribeLogStreamsCommand({
+          logGroupName: AUDIT_LOG_CLOUDWATCH_GROUP,
+          logStreamNamePrefix: AUDIT_LOG_CLOUDWATCH_STREAM,
+          limit: 1,
+        })
+      );
+      const stream = describe.logStreams?.find((item) => item.logStreamName === AUDIT_LOG_CLOUDWATCH_STREAM);
+      cloudWatchSequenceToken = stream?.uploadSequenceToken;
+    } catch (error) {
+      console.error('[database] CloudWatch: error obteniendo sequenceToken', error);
+      return;
+    }
+  }
+
+  try {
+    const response = await cloudWatchClient.send(
+      new PutLogEventsCommand({
+        logGroupName: AUDIT_LOG_CLOUDWATCH_GROUP,
+        logStreamName: AUDIT_LOG_CLOUDWATCH_STREAM,
+        logEvents: [{
+          message: JSON.stringify(entry),
+          timestamp: Date.now(),
+        }],
+        sequenceToken: cloudWatchSequenceToken,
+      })
+    );
+    cloudWatchSequenceToken = response.nextSequenceToken ?? cloudWatchSequenceToken;
+  } catch (error) {
+    console.error('[database] CloudWatch: error enviando evento', error);
+  }
+}
+
+async function forwardAuditLog(entry: AuditLogEntry) {
+  await Promise.allSettled([forwardAuditLogToHttp(entry), forwardAuditLogToCloudWatch(entry)]);
+}
+
 async function appendAuditLog(entry: AuditLogEntry) {
   const line = `${JSON.stringify(entry)}\n`;
   try {
     await fs.mkdir(path.dirname(AUDIT_LOG_PATH), { recursive: true });
+    await rotateAuditLogIfNeeded();
     await withRetries(() => fs.appendFile(AUDIT_LOG_PATH, line, 'utf8'));
+    await forwardAuditLog(entry);
   } catch (error) {
     console.error('[database] No se pudo registrar auditoría', error);
   }
