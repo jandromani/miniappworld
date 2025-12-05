@@ -57,6 +57,7 @@ async function initiatePayment(body: InitiatePaymentPayload) {
   const response = await fetch('/api/initiate-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify(body),
   });
 
@@ -77,6 +78,7 @@ async function confirmPayment(
   const response = await fetch('/api/confirm-payment', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
     body: JSON.stringify({ payload, reference }),
   });
 
