@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import { getTournament, serializeTournament } from '@/lib/server/tournamentData';
 
+const TOURNAMENT_DETAIL_CACHE_CONTROL = 'public, max-age=120, stale-while-revalidate=600';
+export const revalidate = 120;
+
 export async function GET(_req: NextRequest, { params }: { params: { tournamentId: string } }) {
   const tournament = await getTournament(params.tournamentId);
 
@@ -13,6 +16,9 @@ export async function GET(_req: NextRequest, { params }: { params: { tournamentI
     });
   }
 
+  return NextResponse.json(await serializeTournament(tournament), {
+    headers: { 'Cache-Control': TOURNAMENT_DETAIL_CACHE_CONTROL },
+  });
   const serialized = await serializeTournament(tournament);
 
   logApiEvent('info', {

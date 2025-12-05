@@ -5,6 +5,9 @@ import { validateCriticalEnvVars } from '@/lib/envValidation';
 
 const ALLOWED_STATUSES = ['upcoming', 'active', 'finished'];
 
+const TOURNAMENTS_CACHE_CONTROL = 'public, max-age=120, stale-while-revalidate=600';
+export const revalidate = 120;
+
 export async function GET(req: NextRequest) {
   const envError = validateCriticalEnvVars();
   if (envError) {
@@ -57,6 +60,9 @@ export async function GET(req: NextRequest) {
     count: serialized.length,
   });
 
+  return NextResponse.json(serialized, {
+    headers: { 'Cache-Control': TOURNAMENTS_CACHE_CONTROL },
+  });
   return NextResponse.json(serialized);
   const filtered = searchTerm
     ? tournaments.filter((tournament) => tournament.name.toLowerCase().includes(searchTerm.toLowerCase()))

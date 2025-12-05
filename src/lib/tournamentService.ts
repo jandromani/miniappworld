@@ -22,7 +22,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export async function getActiveTournaments(): Promise<Tournament[]> {
-  const response = await fetch(`${BASE_PATH}?status=active,upcoming`, { cache: 'no-store' });
+  const response = await fetch(`${BASE_PATH}?status=active,upcoming`);
   const data = await handleResponse<Tournament[]>(response);
 
   return data
@@ -31,7 +31,7 @@ export async function getActiveTournaments(): Promise<Tournament[]> {
 }
 
 export async function getTournamentDetails(tournamentId: string): Promise<Tournament> {
-  const response = await fetch(`${BASE_PATH}/${tournamentId}`, { cache: 'no-store' });
+  const response = await fetch(`${BASE_PATH}/${tournamentId}`);
   const data = await handleResponse<Tournament>(response);
 
   return parseTournamentDates(data);
