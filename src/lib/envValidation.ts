@@ -6,6 +6,7 @@ const REQUIRED_ENV_VARS = [
   'NEXT_PUBLIC_APP_ID',
   'NEXT_PUBLIC_DEV_PORTAL_API_KEY',
   'NEXT_PUBLIC_RECEIVER_ADDRESS',
+  'NEXT_PUBLIC_ACTION',
 ] as const;
 
 export function validateCriticalEnvVars() {
