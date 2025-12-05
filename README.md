@@ -7,6 +7,7 @@ comodines, endpoints de pagos y contrato de torneos en World Chain.
 ## Requisitos
 - Node.js 18+
 - Variables de entorno definidas en `.env` (ver `.env.example`).
+  - Al iniciar se validan las claves críticas: `APP_ID`, `DEV_PORTAL_API_KEY`, `NEXT_PUBLIC_APP_ID`, `NEXT_PUBLIC_DEV_PORTAL_API_KEY`, `NEXT_PUBLIC_RECEIVER_ADDRESS` y al menos una de `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`.
   - Define `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` para habilitar rate limiting distribuido entre réplicas. Si no están
     presentes se usa un bucket en memoria (solo recomendado para desarrollo local).
 
@@ -21,6 +22,7 @@ npm run start
 ## Auditoría y rotación de logs
 - El archivo `data/audit.log` rota automáticamente cuando cambia el día o al alcanzar el tamaño configurado (5 MB por defecto, puedes ajustar con `AUDIT_LOG_MAX_SIZE_BYTES`).
 - Desactiva la rotación diaria con `AUDIT_LOG_ROTATE_DAILY=false` si solo quieres rotar por tamaño.
+- Define `AUDIT_LOG_RETENTION_DAYS` para purgar archivos de auditoría rotados y limitar la retención mínima (30 días por defecto).
 - Reenvío opcional a servicios externos:
 - `AUDIT_LOG_HTTP_ENDPOINT` (+ `AUDIT_LOG_HTTP_AUTHORIZATION`): envía cada entrada como `POST` JSON, pensado para ingestas HTTP (ELK, webhooks).
 - `AUDIT_LOG_CLOUDWATCH_GROUP` y `AUDIT_LOG_CLOUDWATCH_STREAM` (+ `AWS_REGION`): publica las entradas en CloudWatch Logs, creando el grupo/stream si no existen.
@@ -42,12 +44,17 @@ npm run start
   npm run data:snapshot:restore -- --id <id>
   ```
 - Los snapshots se guardan en `data/.snapshots/` (ignorada en git) y la restauración purga la carpeta `data/` manteniendo solo el snapshot seleccionado.
+## Protección de datos en repositorio
+- Todas las entradas de auditoría y logs de API se pseudonimizan (hash SHA-256 con `LOG_HASH_SECRET`) para evitar exponer IDs de usuario, wallets, tokens o referencias sensibles.
+- Puedes cifrar en reposo el archivo `data/database.json` habilitando `DATA_ENCRYPTION_KEY` (AES-256-GCM). Si usas un backend gestionado, considera migrar el almacenamiento local a una base de datos segura (PostgreSQL/Redis) y mantener `DISABLE_LOCAL_STATE=true` para evitar escribir a disco.
 
 ## Configuración de MiniKit
 Define en `.env`:
-- `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
-- `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
+- `APP_ID` y `NEXT_PUBLIC_APP_ID`: ID de la mini app desde Developer Portal.
+- `DEV_PORTAL_API_KEY` y `NEXT_PUBLIC_DEV_PORTAL_API_KEY`: API key de Developer Portal.
 - `NEXT_PUBLIC_TREASURY_ADDRESS`: Address que recibe buy-ins.
+- `NEXT_PUBLIC_RECEIVER_ADDRESS`: Address que recibe pagos simulados en el backend.
+- `NOTIFICATIONS_API_KEY` o `NOTIFICATIONS_API_KEYS`: Claves para autenticar `/api/send-notification`.
 
 El proveedor de MiniKit se inicializa en `app/providers.tsx` y ejecuta `walletAuth` al
 montar la app. En la pantalla de juego (`/game`) puedes lanzar `verify` para validar
@@ -130,6 +137,14 @@ Las rutas de documentación relevantes son:
 - Tests de contratos en Foundry: `forge test`.
 - Tests unitarios/integración de Mini App (Jest): `npm test`.
 - Ejecución en CI (serializado): `npm run test:ci`.
+
+### Pruebas móviles de juego y pagos
+- Ejecuta `npm test -- --runTestsByPath __tests__/gamePage.mobile.test.tsx __tests__/tournamentBuyIn.mobile.test.tsx` para
+  validar los estilos responsivos en pantallas reducidas.
+- Verificación manual en 360x640 (móvil):
+  - `/game`: el header se apila, las estadísticas se muestran en 2 columnas y los botones de respuesta ocupan todo el ancho.
+  - `/tournament/buy-in`: los botones de modo se apilan, la grilla de tokens usa 2 columnas y el CTA de pago es de ancho
+    completo.
 
 Las pruebas de Jest utilizan mocks deterministas del Developer Portal y World ID para simular Verify + Pay + Join, validar montos/tokenes y verificar el manejo de errores (identidad no verificada, pagos rechazados o confirmaciones fallidas).
 
