@@ -75,6 +75,16 @@ export type TournamentResultRecord = {
   prize?: string;
 };
 
+export type TournamentPayoutRecord = {
+  payout_id: string;
+  tournament_id: string;
+  user_id?: string;
+  wallet_address?: string;
+  prize_amount: string;
+  token_address: string;
+  transaction_hash: string;
+  status: 'pending' | 'confirmed' | 'failed';
+  created_at: string;
 export type GameProgressRecord = {
   progress_id: string;
   session_id: string;
@@ -96,6 +106,7 @@ export type DatabaseShape = {
   tournaments: TournamentRecord[];
   tournament_participants: TournamentParticipantRecord[];
   tournament_results: TournamentResultRecord[];
+  tournament_payouts: TournamentPayoutRecord[];
   game_progress: GameProgressRecord[];
 };
 
@@ -407,6 +418,7 @@ async function ensureDbFile(): Promise<void> {
         tournaments: [],
         tournament_participants: [],
         tournament_results: [],
+        tournament_payouts: [],
         game_progress: [],
       };
       await fs.writeFile(DB_PATH, JSON.stringify(emptyDb, null, 2), 'utf8');
@@ -1013,6 +1025,53 @@ export async function listTournamentResults(tournamentId: string): Promise<Tourn
   );
 }
 
+export async function listTournamentPayouts(tournamentId: string) {
+  return withDbSnapshot((db) =>
+    db.tournament_payouts.filter((entry) => entry.tournament_id === tournamentId)
+  );
+}
+
+export async function recordTournamentPayouts(
+  records: Omit<TournamentPayoutRecord, 'payout_id' | 'created_at' | 'status'>[],
+  context: AuditContext = {}
+) {
+  const created = await withDbTransaction(async (db) => {
+    const timestamp = new Date().toISOString();
+    const entries = records.map<TournamentPayoutRecord>((record) => ({
+      ...record,
+      payout_id: randomUUID(),
+      created_at: timestamp,
+      status: 'confirmed',
+    }));
+
+    db.tournament_payouts.push(...entries);
+    return entries;
+  });
+
+  for (const entry of created) {
+    await appendAuditLog({
+      action: 'record_tournament_payout',
+      entity: 'tournament_payouts',
+      entityId: entry.payout_id,
+      timestamp: entry.created_at,
+      userId: context.userId ?? entry.user_id,
+      sessionId: context.sessionId,
+      status: 'success',
+      details: {
+        tournament_id: entry.tournament_id,
+        transaction_hash: entry.transaction_hash,
+        wallet_address: entry.wallet_address,
+      },
+    });
+  }
+
+  return created;
+}
+
+export async function findWalletByUserId(userId: string) {
+  return withWorldIdCleanupSnapshot((db) =>
+    db.world_id_verifications.find((entry) => entry.user_id === userId)?.wallet_address
+  );
 export async function upsertGameProgress(
   record: Omit<GameProgressRecord, 'progress_id' | 'created_at' | 'updated_at'>,
   context: AuditContext = {}
