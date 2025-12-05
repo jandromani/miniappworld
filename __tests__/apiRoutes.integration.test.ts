@@ -172,6 +172,105 @@ describe('API real flow with HTTP mocks', () => {
     );
   });
 
+  it('rechaza la inscripción sin token de sesión', async () => {
+    const { POST: joinTournament } = await import('@/app/api/tournaments/[tournamentId]/join/route');
+
+    const joinRequest = buildNextRequest(
+      `http://localhost/api/tournaments/${tournamentId}/join`,
+      {
+        token: SUPPORTED_TOKENS.WLD.address,
+        amount: 1,
+        userId,
+        username: 'Tester',
+        walletAddress,
+        score: 0,
+        paymentReference: reference,
+      },
+    );
+
+    const joinResponse = await joinTournament(joinRequest, { params: { tournamentId } });
+    const joinBody = await joinResponse.json();
+
+    expect(joinResponse.status).toBe(401);
+    expect(joinBody.error).toContain('Sesión no verificada');
+  });
+
+  it('rechaza la inscripción con sesión inválida', async () => {
+    const { POST: joinTournament } = await import('@/app/api/tournaments/[tournamentId]/join/route');
+
+    const joinRequest = buildNextRequest(
+      `http://localhost/api/tournaments/${tournamentId}/join`,
+      {
+        token: SUPPORTED_TOKENS.WLD.address,
+        amount: 1,
+        userId,
+        username: 'Tester',
+        walletAddress,
+        score: 0,
+        paymentReference: reference,
+      },
+      { cookies: { session_token: 'missing-session' } },
+    );
+
+    const joinResponse = await joinTournament(joinRequest, { params: { tournamentId } });
+    const joinBody = await joinResponse.json();
+
+    expect(joinResponse.status).toBe(401);
+    expect(joinBody.error).toContain('La sesión no es válida');
+  });
+
+  it('rechaza la inscripción cuando el pago pertenece a otra sesión', async () => {
+    const { insertWorldIdVerification, createPaymentRecord, updatePaymentStatus } = await import(
+      '@/lib/database'
+    );
+    const { POST: joinTournament } = await import('@/app/api/tournaments/[tournamentId]/join/route');
+
+    await insertWorldIdVerification({
+      nullifier_hash: 'nullifier-hash',
+      wallet_address: walletAddress,
+      action: 'verify',
+      user_id: userId,
+      session_token: sessionToken,
+      verification_level: 'orb',
+      merkle_root: 'root',
+    });
+
+    await createPaymentRecord({
+      reference,
+      user_id: userId,
+      tournament_id: tournamentId,
+      token_address: SUPPORTED_TOKENS.WLD.address,
+      token_amount: '1',
+      recipient_address: SUPPORTED_TOKENS.WLD.address,
+      type: 'tournament',
+      wallet_address: walletAddress,
+      session_token: 'other-session',
+      nullifier_hash: 'nullifier-hash',
+    });
+
+    await updatePaymentStatus(reference, 'confirmed');
+
+    const joinRequest = buildNextRequest(
+      `http://localhost/api/tournaments/${tournamentId}/join`,
+      {
+        token: SUPPORTED_TOKENS.WLD.address,
+        amount: 1,
+        userId,
+        username: 'Tester',
+        walletAddress,
+        score: 0,
+        paymentReference: reference,
+      },
+      { cookies: { session_token: sessionToken } },
+    );
+
+    const joinResponse = await joinTournament(joinRequest, { params: { tournamentId } });
+    const joinBody = await joinResponse.json();
+
+    expect(joinResponse.status).toBe(403);
+    expect(joinBody.error).toContain('referencia de pago no pertenece a esta sesión');
+  });
+
   it('rechaza una transacción creada antes del pago iniciado', async () => {
     const { insertWorldIdVerification, findPaymentByReference } = await import('@/lib/database');
     const { POST: initiatePayment } = await import('@/app/api/initiate-payment/route');
