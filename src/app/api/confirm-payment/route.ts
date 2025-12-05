@@ -4,6 +4,7 @@ import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
+  isLocalStorageDisabled,
   PaymentRecord,
   recordAuditEvent,
   updatePaymentStatus,
@@ -67,6 +68,23 @@ function buildSimulatedTransaction(
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    const { payload, reference } = (await req.json()) as {
+      payload: MiniAppPaymentSuccessPayload;
+      reference: string;
+    };
+
+    const sessionToken = req.cookies.get('session_token')?.value;
+    const sessionId = sessionToken;
+
+    if (!sessionToken) {
+      await recordAuditEvent({
+        action: 'confirm_payment',
+        entity: 'payments',
+        entityId: reference,
+        status: 'error',
+        details: { reason: 'missing_session_token' },
+      });
   const envError = validateCriticalEnvVars();
   if (envError) {
     return envError;
@@ -111,18 +129,36 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
+      return NextResponse.json(
+        { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
+        { status: 401 }
+      );
+    }
 
-  if (!sessionIdentity) {
-    await recordAuditEvent({
-      action: 'confirm_payment',
-      entity: 'payments',
-      entityId: reference,
-      sessionId,
-      status: 'error',
-      details: { reason: 'session_not_found' },
-    });
+    const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
 
+    if (!sessionIdentity) {
+      await recordAuditEvent({
+        action: 'confirm_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId,
+        status: 'error',
+        details: { reason: 'session_not_found' },
+      });
+
+      return NextResponse.json(
+        { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
+        { status: 401 }
+      );
+    }
+
+    if (!payload || !reference) {
+      return NextResponse.json(
+        { success: false, message: 'Payload y referencia son obligatorios' },
+        { status: 400 }
+      );
+    }
     return apiErrorResponse('SESSION_INVALID', {
       message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
       path: PATH,
@@ -140,7 +176,19 @@ export async function POST(req: NextRequest) {
     return apiErrorResponse('PAYMENT_REJECTED', { message: 'Pago rechazado', path: PATH });
   }
 
-  const storedPayment = await findPaymentByReference(reference);
+    if (payload.status === 'error') {
+      return NextResponse.json({ success: false, message: 'Pago rechazado' }, { status: 400 });
+    }
+
+    const storedPayment = await findPaymentByReference(reference);
+
+    if (!storedPayment) {
+      return NextResponse.json({ success: false, message: 'Referencia no encontrada' }, { status: 400 });
+    }
+
+    if (storedPayment.status === 'confirmed') {
+      return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
+    }
 
   if (!storedPayment) {
     return apiErrorResponse('REFERENCE_NOT_FOUND', {
@@ -204,6 +252,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const transaction = await response.json();
     transaction = await response.json();
   }
 
@@ -501,6 +550,24 @@ export async function POST(req: NextRequest) {
 
   await updatePaymentStatus(reference, 'failed', { reason: failureMessage }, { userId: storedPayment.user_id, sessionId });
 
+  return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
+  } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Persistencia local deshabilitada. Configure un directorio compartido o servicio de storage.',
+        },
+        { status: 503 }
+      );
+    }
+
+    console.error('[confirm-payment] Error inesperado', error);
+    return NextResponse.json(
+      { success: false, message: 'No se pudo confirmar el pago. Intente nuevamente más tarde.' },
+      { status: 500 }
+    );
+  }
   return apiErrorResponse('PAYMENT_STATUS_ERROR', {
     message: failureMessage,
     path: PATH,

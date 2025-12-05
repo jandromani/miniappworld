@@ -6,6 +6,7 @@ import {
   findWorldIdVerificationByNullifier,
   findWorldIdVerificationByUser,
   insertWorldIdVerification,
+  isLocalStorageDisabled,
 } from '@/lib/database';
 import { DEFAULT_WORLD_ID_ACTION, isValidWorldIdAction, type WorldIdAction } from '@/lib/worldId';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
@@ -140,6 +141,13 @@ export async function POST(req: NextRequest) {
 
     return response;
   } catch (error) {
+    if (isLocalStorageDisabled(error)) {
+      return NextResponse.json(
+        { success: false, error: 'Persistencia local deshabilitada. Configure almacenamiento compartido o servicio remoto.' },
+        { status: 503 }
+      );
+    }
+
     const code = (error as NodeJS.ErrnoException)?.code;
     if (code === 'DUPLICATE_NULLIFIER') {
       return apiErrorResponse('CONFLICT', {

@@ -99,6 +99,10 @@ export type DatabaseShape = {
   game_progress: GameProgressRecord[];
 };
 
+const DATA_ROOT = process.env.STATE_DIRECTORY ?? path.join(process.cwd(), 'data');
+const DB_PATH = path.join(DATA_ROOT, 'database.json');
+const LOCK_PATH = path.join(DATA_ROOT, 'database.lock');
+const AUDIT_LOG_PATH = path.join(DATA_ROOT, 'audit.log');
 const DB_PATH = path.join(process.cwd(), 'data', 'database.json');
 const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
 const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
@@ -114,6 +118,13 @@ const RETRY_DELAY_MS = 75;
 const LOCK_MAX_AGE_MS = 10_000; // 10 segundos
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
 
+function assertPersistentStorageAvailable() {
+  if (process.env.DISABLE_LOCAL_STATE === 'true') {
+    const error = new Error('El almacenamiento local está deshabilitado. Configure un directorio compartido.');
+    (error as NodeJS.ErrnoException).code = 'LOCAL_STORAGE_DISABLED';
+    throw error;
+  }
+}
 let cloudWatchClient: CloudWatchLogsClient | undefined;
 let cloudWatchSequenceToken: string | undefined;
 type CachedVerification = {
@@ -137,6 +148,10 @@ export type AuditLogEntry = {
   details?: Record<string, unknown>;
 };
 
+export function isLocalStorageDisabled(error: unknown) {
+  return (error as NodeJS.ErrnoException)?.code === 'LOCAL_STORAGE_DISABLED';
+}
+
 async function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -158,6 +173,8 @@ async function withRetries<T>(operation: () => Promise<T>, attempts = RETRY_ATTE
 }
 
 async function acquireLock(attempts = RETRY_ATTEMPTS): Promise<FileHandle> {
+  assertPersistentStorageAvailable();
+
   let lastError: unknown;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
@@ -358,6 +375,8 @@ async function forwardAuditLog(entry: AuditLogEntry) {
 }
 
 async function appendAuditLog(entry: AuditLogEntry) {
+  assertPersistentStorageAvailable();
+
   const line = `${JSON.stringify(entry)}\n`;
   try {
     await fs.mkdir(path.dirname(AUDIT_LOG_PATH), { recursive: true });
@@ -374,6 +393,8 @@ export async function recordAuditEvent(event: Omit<AuditLogEntry, 'timestamp'>) 
 }
 
 async function ensureDbFile(): Promise<void> {
+  assertPersistentStorageAvailable();
+
   await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
   try {
     await fs.access(DB_PATH);
@@ -396,6 +417,8 @@ async function ensureDbFile(): Promise<void> {
 }
 
 async function loadDb(): Promise<DatabaseShape> {
+  assertPersistentStorageAvailable();
+
   await ensureDbFile();
   const content = await withRetries(() => fs.readFile(DB_PATH, 'utf8'));
   const parsed = JSON.parse(content) as Partial<DatabaseShape>;
@@ -411,6 +434,8 @@ async function loadDb(): Promise<DatabaseShape> {
 }
 
 async function persistDb(db: DatabaseShape): Promise<void> {
+  assertPersistentStorageAvailable();
+
   const tempPath = `${DB_PATH}.tmp`;
 
   await withRetries(async () => {

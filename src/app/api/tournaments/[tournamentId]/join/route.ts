@@ -12,6 +12,7 @@ import {
   findPaymentByReference,
   findWorldIdVerificationBySession,
   findWorldIdVerificationByUser,
+  isLocalStorageDisabled,
   recordAuditEvent,
 } from '@/lib/database';
 import {
@@ -56,10 +57,6 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
       status: 'error',
       details: { reason: 'missing_session_token', paymentReference },
     });
-    return NextResponse.json({ error: 'Sesión no verificada' }, { status: 401 });
-  }
-
-  const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
 
   if (!sessionIdentity) {
     await recordAuditEvent({
@@ -106,9 +103,8 @@ export async function POST(req: NextRequest, { params }: { params: JoinParams })
     return NextResponse.json({ error: 'El usuario ya está inscrito en este torneo' }, { status: 400 });
   }
 
-  const payment = await findPaymentByReference(paymentReference);
-  if (!payment) {
-    return NextResponse.json({ error: 'Pago no encontrado' }, { status: 404 });
+    console.error('[join_tournament] Error inesperado', error);
+    return NextResponse.json({ error: 'Error interno al procesar la inscripción' }, { status: 500 });
   }
 
   if (payment.status !== 'confirmed') {

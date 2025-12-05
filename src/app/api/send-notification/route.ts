@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { rateLimit } from '@/lib/rateLimit';
 import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
 import { validateSameOrigin } from '@/lib/security';
@@ -224,6 +225,7 @@ async function authenticate(req: NextRequest): Promise<AuthResult> {
   };
 }
 
+function logAudit(event: {
 function checkRateLimit(apiKey: string) {
   return notificationRateLimiter.limit(apiKey);
 }
@@ -339,6 +341,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
   }
 
+  const rate = await rateLimit(`notifications:${providedKey ?? 'missing'}`, {
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    maxRequests: RATE_LIMIT_MAX_REQUESTS,
+  });
+
+  if (!rate.allowed) {
   if (!checkRateLimit(providedKey!)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'rate_limited' });
   const authResult = await authenticate(req);
