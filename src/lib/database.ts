@@ -88,6 +88,7 @@ const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
 const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
 const RETRY_ATTEMPTS = 5;
 const RETRY_DELAY_MS = 75;
+const LOCK_MAX_AGE_MS = 10_000; // 10 segundos
 const WORLD_ID_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 días
 
 export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
@@ -134,6 +135,24 @@ async function acquireLock(attempts = RETRY_ATTEMPTS): Promise<FileHandle> {
       lastError = error;
       if (code !== 'EEXIST' && code !== 'EACCES') {
         break;
+      }
+
+      try {
+        const stats = await fs.stat(LOCK_PATH);
+        const ageMs = Date.now() - stats.mtimeMs;
+
+        if (ageMs > LOCK_MAX_AGE_MS) {
+          console.warn(
+            `[database] Lockfile obsoleto detectado (edad: ${ageMs}ms). Intentando recuperación...`
+          );
+          await releaseLock();
+          continue;
+        }
+      } catch (statError) {
+        const statCode = (statError as NodeJS.ErrnoException).code;
+        if (statCode !== 'ENOENT') {
+          console.error('[database] No se pudo verificar la edad del lockfile', statError);
+        }
       }
 
       await delay(RETRY_DELAY_MS * (attempt + 1));
