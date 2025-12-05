@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import fs from 'fs/promises';
+import fs, { FileHandle } from 'fs/promises';
 import path from 'path';
 import { normalizeTokenIdentifier } from './tokenNormalization';
 
@@ -83,6 +83,101 @@ export type DatabaseShape = {
 };
 
 const DB_PATH = path.join(process.cwd(), 'data', 'database.json');
+const LOCK_PATH = path.join(process.cwd(), 'data', 'database.lock');
+const AUDIT_LOG_PATH = path.join(process.cwd(), 'data', 'audit.log');
+const RETRY_ATTEMPTS = 5;
+const RETRY_DELAY_MS = 75;
+
+export type AuditContext = { userId?: string; sessionId?: string; skipUserValidation?: boolean };
+type AuditLogEntry = {
+  timestamp: string;
+  action: string;
+  entity: string;
+  entityId?: string;
+  userId?: string;
+  sessionId?: string;
+  status: 'success' | 'error';
+  details?: Record<string, unknown>;
+};
+
+async function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetries<T>(operation: () => Promise<T>, attempts = RETRY_ATTEMPTS): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1) break;
+      await delay(RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+
+  throw lastError;
+}
+
+async function acquireLock(attempts = RETRY_ATTEMPTS): Promise<FileHandle> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await fs.mkdir(path.dirname(LOCK_PATH), { recursive: true });
+      return await fs.open(LOCK_PATH, 'wx');
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      lastError = error;
+      if (code !== 'EEXIST' && code !== 'EACCES') {
+        break;
+      }
+
+      await delay(RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+
+  throw lastError;
+}
+
+async function releaseLock(handle?: FileHandle) {
+  try {
+    await fs.unlink(LOCK_PATH);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      console.error('[database] Error al liberar lockfile', error);
+    }
+  }
+
+  if (handle) {
+    try {
+      await handle.close();
+    } catch (error) {
+      console.error('[database] Error al cerrar lockfile', error);
+    }
+  }
+}
+
+async function withDbLock<T>(operation: () => Promise<T>): Promise<T> {
+  const lock = await acquireLock();
+  try {
+    return await operation();
+  } finally {
+    await releaseLock(lock);
+  }
+}
+
+async function appendAuditLog(entry: AuditLogEntry) {
+  const line = `${JSON.stringify(entry)}\n`;
+  try {
+    await fs.mkdir(path.dirname(AUDIT_LOG_PATH), { recursive: true });
+    await withRetries(() => fs.appendFile(AUDIT_LOG_PATH, line, 'utf8'));
+  } catch (error) {
+    console.error('[database] No se pudo registrar auditoría', error);
+  }
+}
 
 async function ensureDbFile(): Promise<void> {
   await fs.mkdir(path.dirname(DB_PATH), { recursive: true });
@@ -105,45 +200,102 @@ async function ensureDbFile(): Promise<void> {
   }
 }
 
-async function readDb(): Promise<DatabaseShape> {
+async function loadDb(): Promise<DatabaseShape> {
   await ensureDbFile();
-  const content = await fs.readFile(DB_PATH, 'utf8');
+  const content = await withRetries(() => fs.readFile(DB_PATH, 'utf8'));
   return JSON.parse(content) as DatabaseShape;
 }
 
-async function writeDb(db: DatabaseShape): Promise<void> {
-  await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+async function persistDb(db: DatabaseShape): Promise<void> {
+  const tempPath = `${DB_PATH}.tmp`;
+
+  await withRetries(async () => {
+    await fs.writeFile(tempPath, JSON.stringify(db, null, 2), 'utf8');
+    await fs.rename(tempPath, DB_PATH);
+  });
+}
+
+async function withDbTransaction<T>(operation: (db: DatabaseShape) => Promise<T>): Promise<T> {
+  return withDbLock(async () => {
+    const db = await loadDb();
+    const result = await operation(db);
+    await persistDb(db);
+    return result;
+  });
+}
+
+async function withDbSnapshot<T>(operation: (db: DatabaseShape) => T | Promise<T>): Promise<T> {
+  return withDbLock(async () => {
+    const db = await loadDb();
+    return operation(db);
+  });
+}
+
+function assertTournamentExists(db: DatabaseShape, tournamentId: string) {
+  const tournament = db.tournaments.find((entry) => entry.tournament_id === tournamentId);
+  if (!tournament) {
+    const error = new Error('Tournament not found');
+    (error as NodeJS.ErrnoException).code = 'TOURNAMENT_NOT_FOUND';
+    throw error;
+  }
+  return tournament;
+}
+
+function assertUserExists(db: DatabaseShape, userId?: string, context?: AuditContext) {
+  if (!userId || userId === 'anonymous' || context?.skipUserValidation) return;
+
+  const exists = db.world_id_verifications.some((entry) => entry.user_id === userId);
+  if (!exists) {
+    const error = new Error('User not found');
+    (error as NodeJS.ErrnoException).code = 'USER_NOT_FOUND';
+    throw error;
+  }
 }
 
 export async function findWorldIdVerificationByNullifier(nullifier_hash: string) {
-  const db = await readDb();
-  return db.world_id_verifications.find((record) => record.nullifier_hash === nullifier_hash);
+  return withDbSnapshot((db) =>
+    db.world_id_verifications.find((record) => record.nullifier_hash === nullifier_hash)
+  );
 }
 
 export async function findWorldIdVerificationByUser(user_id: string) {
-  const db = await readDb();
-  return db.world_id_verifications.find((record) => record.user_id === user_id);
+  return withDbSnapshot((db) => db.world_id_verifications.find((record) => record.user_id === user_id));
 }
 
-export async function insertWorldIdVerification(record: Omit<WorldIdVerificationRecord, 'created_at'>) {
-  const db = await readDb();
-  const exists = db.world_id_verifications.find(
-    (item) => item.nullifier_hash === record.nullifier_hash
-  );
+export async function insertWorldIdVerification(
+  record: Omit<WorldIdVerificationRecord, 'created_at'>,
+  context: AuditContext = {}
+) {
+  const entry = await withDbTransaction(async (db) => {
+    const exists = db.world_id_verifications.find(
+      (item) => item.nullifier_hash === record.nullifier_hash
+    );
 
-  if (exists) {
-    const error = new Error('Duplicate nullifier_hash');
-    (error as NodeJS.ErrnoException).code = 'DUPLICATE_NULLIFIER';
-    throw error;
-  }
+    if (exists) {
+      const error = new Error('Duplicate nullifier_hash');
+      (error as NodeJS.ErrnoException).code = 'DUPLICATE_NULLIFIER';
+      throw error;
+    }
 
-  const entry: WorldIdVerificationRecord = {
-    ...record,
-    created_at: new Date().toISOString(),
-  };
+    const created: WorldIdVerificationRecord = {
+      ...record,
+      created_at: new Date().toISOString(),
+    };
 
-  db.world_id_verifications.push(entry);
-  await writeDb(db);
+    db.world_id_verifications.push(created);
+    return created;
+  });
+
+  await appendAuditLog({
+    action: 'insert_world_id_verification',
+    entity: 'world_id_verifications',
+    entityId: entry.nullifier_hash,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? entry.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+  });
+
   return entry;
 }
 
@@ -153,145 +305,230 @@ export async function findWorldIdVerificationBySession(session_token: string) {
 }
 
 export async function createPaymentRecord(
-  record: Omit<PaymentRecord, 'payment_id' | 'status' | 'created_at' | 'updated_at'>
+  record: Omit<PaymentRecord, 'payment_id' | 'status' | 'created_at' | 'updated_at'>,
+  context: AuditContext = {}
 ): Promise<PaymentRecord> {
-  const db = await readDb();
-  if (db.payments.find((payment) => payment.reference === record.reference)) {
-    const error = new Error('Duplicate payment reference');
-    (error as NodeJS.ErrnoException).code = 'DUPLICATE_REFERENCE';
-    throw error;
-  }
+  const payment = await withDbTransaction(async (db) => {
+    if (db.payments.find((existing) => existing.reference === record.reference)) {
+      const error = new Error('Duplicate payment reference');
+      (error as NodeJS.ErrnoException).code = 'DUPLICATE_REFERENCE';
+      throw error;
+    }
 
-  const payment: PaymentRecord = {
-    ...record,
-    payment_id: randomUUID(),
-    status: 'pending',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
+    if (record.type === 'tournament' && record.tournament_id) {
+      assertTournamentExists(db, record.tournament_id);
+    }
 
-  db.payments.push(payment);
-  db.payment_status_history.push({
-    payment_id: payment.payment_id,
-    old_status: undefined,
-    new_status: 'pending',
-    changed_at: payment.created_at,
-    reason: 'Payment initiated',
+    assertUserExists(db, record.user_id, context);
+
+    const created: PaymentRecord = {
+      ...record,
+      payment_id: randomUUID(),
+      status: 'pending',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    db.payments.push(created);
+    db.payment_status_history.push({
+      payment_id: created.payment_id,
+      old_status: undefined,
+      new_status: 'pending',
+      changed_at: created.created_at,
+      reason: 'Payment initiated',
+    });
+
+    return created;
   });
 
-  await writeDb(db);
+  await appendAuditLog({
+    action: 'create_payment',
+    entity: 'payments',
+    entityId: payment.payment_id,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? payment.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+    details: { reference: payment.reference, type: payment.type },
+  });
+
   return payment;
 }
 
 export async function findPaymentByReference(reference: string): Promise<PaymentRecord | undefined> {
-  const db = await readDb();
-  return db.payments.find((payment) => payment.reference === reference);
+  return withDbSnapshot((db) => db.payments.find((payment) => payment.reference === reference));
 }
 
 export async function updatePaymentStatus(
   reference: string,
   newStatus: PaymentStatus,
-  options: { reason?: string; transaction_id?: string; confirmed_at?: string } = {}
+  options: { reason?: string; transaction_id?: string; confirmed_at?: string } = {},
+  context: AuditContext = {}
 ): Promise<PaymentRecord | undefined> {
-  const db = await readDb();
-  const paymentIndex = db.payments.findIndex((payment) => payment.reference === reference);
+  const { payment, updated } = await withDbTransaction(async (db) => {
+    const paymentIndex = db.payments.findIndex((entry) => entry.reference === reference);
 
-  if (paymentIndex === -1) return undefined;
+    if (paymentIndex === -1) return { payment: undefined, updated: undefined };
 
-  const payment = db.payments[paymentIndex];
-  const updated: PaymentRecord = {
-    ...payment,
-    status: newStatus,
-    transaction_id: options.transaction_id ?? payment.transaction_id,
-    confirmed_at: options.confirmed_at ?? payment.confirmed_at,
-    updated_at: new Date().toISOString(),
-  };
+    const existing = db.payments[paymentIndex];
 
-  db.payments[paymentIndex] = updated;
-  db.payment_status_history.push({
-    payment_id: payment.payment_id,
-    old_status: payment.status,
-    new_status: newStatus,
-    changed_at: new Date().toISOString(),
-    reason: options.reason,
+    const next: PaymentRecord = {
+      ...existing,
+      status: newStatus,
+      transaction_id: options.transaction_id ?? existing.transaction_id,
+      confirmed_at: options.confirmed_at ?? existing.confirmed_at,
+      updated_at: new Date().toISOString(),
+    };
+
+    db.payments[paymentIndex] = next;
+    db.payment_status_history.push({
+      payment_id: existing.payment_id,
+      old_status: existing.status,
+      new_status: newStatus,
+      changed_at: new Date().toISOString(),
+      reason: options.reason,
+    });
+
+    return { payment: existing, updated: next };
   });
 
-  await writeDb(db);
+  if (payment && updated) {
+    await appendAuditLog({
+      action: 'update_payment_status',
+      entity: 'payments',
+      entityId: payment.payment_id,
+      timestamp: new Date().toISOString(),
+      userId: context.userId ?? payment.user_id,
+      sessionId: context.sessionId,
+      status: 'success',
+      details: { reference, oldStatus: payment.status, newStatus },
+    });
+  }
+
   return updated;
 }
 
 export async function recordTournament(tournament: TournamentRecord): Promise<void> {
-  const db = await readDb();
-  const index = db.tournaments.findIndex((entry) => entry.tournament_id === tournament.tournament_id);
+  await withDbTransaction(async (db) => {
+    const index = db.tournaments.findIndex((entry) => entry.tournament_id === tournament.tournament_id);
 
-  if (index >= 0) {
-    db.tournaments[index] = tournament;
-  } else {
-    db.tournaments.push(tournament);
-  }
+    if (index >= 0) {
+      db.tournaments[index] = tournament;
+    } else {
+      db.tournaments.push(tournament);
+    }
+  });
 
-  await writeDb(db);
+  await appendAuditLog({
+    action: 'upsert_tournament',
+    entity: 'tournaments',
+    entityId: tournament.tournament_id,
+    timestamp: new Date().toISOString(),
+    status: 'success',
+  });
 }
 
 export async function listTournamentRecords(): Promise<TournamentRecord[]> {
-  const db = await readDb();
-  return db.tournaments;
+  return withDbSnapshot((db) => db.tournaments);
 }
 
 export async function findTournamentRecord(tournamentId: string): Promise<TournamentRecord | undefined> {
-  const db = await readDb();
-  return db.tournaments.find((entry) => entry.tournament_id === tournamentId);
+  return withDbSnapshot((db) => db.tournaments.find((entry) => entry.tournament_id === tournamentId));
 }
 
 export async function updateTournamentRecord(tournament: TournamentRecord): Promise<void> {
-  const db = await readDb();
-  const index = db.tournaments.findIndex((entry) => entry.tournament_id === tournament.tournament_id);
-  if (index === -1) throw new Error('Tournament not found');
-  db.tournaments[index] = tournament;
-  await writeDb(db);
+  await withDbTransaction(async (db) => {
+    const index = db.tournaments.findIndex((entry) => entry.tournament_id === tournament.tournament_id);
+    if (index === -1) throw new Error('Tournament not found');
+    db.tournaments[index] = tournament;
+  });
+
+  await appendAuditLog({
+    action: 'update_tournament',
+    entity: 'tournaments',
+    entityId: tournament.tournament_id,
+    timestamp: new Date().toISOString(),
+    status: 'success',
+  });
 }
 
 export async function addTournamentParticipant(
-  participant: TournamentParticipantRecord
+  participant: TournamentParticipantRecord,
+  context: AuditContext = {}
 ): Promise<TournamentParticipantRecord> {
-  const db = await readDb();
-  const exists = db.tournament_participants.find(
-    (entry) => entry.tournament_id === participant.tournament_id && entry.user_id === participant.user_id
-  );
+  const entry = await withDbTransaction(async (db) => {
+    assertTournamentExists(db, participant.tournament_id);
+    assertUserExists(db, participant.user_id, context);
 
-  if (exists) {
-    return exists;
-  }
+    const exists = db.tournament_participants.find(
+      (item) => item.tournament_id === participant.tournament_id && item.user_id === participant.user_id
+    );
 
-  db.tournament_participants.push(participant);
-  await writeDb(db);
-  return participant;
+    if (exists) {
+      return exists;
+    }
+
+    db.tournament_participants.push(participant);
+    return participant;
+  });
+
+  await appendAuditLog({
+    action: 'add_tournament_participant',
+    entity: 'tournament_participants',
+    entityId: `${participant.tournament_id}:${participant.user_id}`,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? participant.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+  });
+
+  return entry;
 }
 
 export async function listTournamentParticipants(tournamentId: string): Promise<TournamentParticipantRecord[]> {
-  const db = await readDb();
-  return db.tournament_participants.filter((entry) => entry.tournament_id === tournamentId);
+  return withDbSnapshot((db) =>
+    db.tournament_participants.filter((entry) => entry.tournament_id === tournamentId)
+  );
 }
 
-export async function upsertTournamentResult(record: TournamentResultRecord): Promise<TournamentResultRecord> {
-  const db = await readDb();
-  const index = db.tournament_results.findIndex(
-    (entry) => entry.tournament_id === record.tournament_id && entry.user_id === record.user_id
-  );
+export async function upsertTournamentResult(
+  record: TournamentResultRecord,
+  context: AuditContext = {}
+): Promise<TournamentResultRecord> {
+  const result = await withDbTransaction(async (db) => {
+    assertTournamentExists(db, record.tournament_id);
+    assertUserExists(db, record.user_id, context);
 
-  if (index >= 0) {
-    db.tournament_results[index] = { ...db.tournament_results[index], ...record };
-  } else {
-    db.tournament_results.push(record);
-  }
+    const index = db.tournament_results.findIndex(
+      (entry) => entry.tournament_id === record.tournament_id && entry.user_id === record.user_id
+    );
 
-  await writeDb(db);
-  return record;
+    if (index >= 0) {
+      db.tournament_results[index] = { ...db.tournament_results[index], ...record };
+    } else {
+      db.tournament_results.push(record);
+    }
+
+    return record;
+  });
+
+  await appendAuditLog({
+    action: 'upsert_tournament_result',
+    entity: 'tournament_results',
+    entityId: `${record.tournament_id}:${record.user_id}`,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? record.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+  });
+
+  return result;
 }
 
 export async function listTournamentResults(tournamentId: string): Promise<TournamentResultRecord[]> {
-  const db = await readDb();
-  return db.tournament_results.filter((entry) => entry.tournament_id === tournamentId);
+  return withDbSnapshot((db) =>
+    db.tournament_results.filter((entry) => entry.tournament_id === tournamentId)
+  );
 }
 
 export async function normalizeTournamentRecord(record: TournamentRecord): TournamentRecord {

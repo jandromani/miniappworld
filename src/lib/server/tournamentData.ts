@@ -77,13 +77,13 @@ async function seedTournaments() {
           user_id: `${baseRecord.tournament_id}-user-1`,
           score: baseScore,
           prize: undefined,
-        });
+        }, { skipUserValidation: true });
         await upsertTournamentResult({
           tournament_id: baseRecord.tournament_id,
           user_id: `${baseRecord.tournament_id}-user-2`,
           score: baseScore - 50,
           prize: undefined,
-        });
+        }, { skipUserValidation: true });
       }
     })
   );
@@ -161,7 +161,7 @@ export async function appendLeaderboardEntry(tournamentId: string, entry: Omit<L
     user_id: entry.userId,
     score: entry.score,
     prize: entry.prize,
-  });
+  }, { userId: entry.userId });
 }
 
 export async function incrementTournamentPool(tournament: Tournament) {
@@ -210,7 +210,7 @@ export async function addParticipantRecord(tournamentId: string, userId: string,
     payment_reference: paymentReference,
     joined_at: new Date().toISOString(),
     status: 'joined',
-  });
+  }, { userId });
 }
 
 export async function participantExists(tournamentId: string, userId: string) {

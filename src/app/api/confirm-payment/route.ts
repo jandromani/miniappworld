@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
   if (transactionReference !== reference) {
     await updatePaymentStatus(reference, 'failed', {
       reason: 'Referencia devuelta no coincide con el pago iniciado',
-    });
+    }, { userId: storedPayment.user_id, sessionId });
 
     return NextResponse.json(
       {
@@ -102,7 +102,10 @@ export async function POST(req: NextRequest) {
   try {
     transactionAmount = transactionAmountRaw !== undefined ? normalizeTokenAmount(transactionAmountRaw) : undefined;
   } catch (error) {
-    await updatePaymentStatus(reference, 'failed', { reason: 'Monto devuelto no es válido' });
+    await updatePaymentStatus(reference, 'failed', { reason: 'Monto devuelto no es válido' }, {
+      userId: storedPayment.user_id,
+      sessionId,
+    });
     return NextResponse.json({ success: false, message: 'Monto de la transacción no válido' }, { status: 400 });
   }
 
@@ -158,7 +161,7 @@ export async function POST(req: NextRequest) {
   ) {
     await updatePaymentStatus(reference, 'failed', {
       reason: 'Token no coincide con el pago esperado',
-    });
+    }, { userId: storedPayment.user_id, sessionId });
 
     return NextResponse.json(
       {
@@ -174,7 +177,7 @@ export async function POST(req: NextRequest) {
     if (expected !== transactionAmount) {
       await updatePaymentStatus(reference, 'failed', {
         reason: 'Monto no coincide con el pago esperado',
-      });
+      }, { userId: storedPayment.user_id, sessionId });
 
       return NextResponse.json(
         { success: false, message: 'El monto cobrado no coincide con el pago solicitado' },
@@ -215,7 +218,7 @@ export async function POST(req: NextRequest) {
     if (storedPayment.tournament_id && transactionTournamentId && storedPayment.tournament_id !== transactionTournamentId) {
       await updatePaymentStatus(reference, 'failed', {
         reason: 'Referencia de torneo no coincide con el flujo solicitado',
-      });
+      }, { userId: storedPayment.user_id, sessionId });
 
       return NextResponse.json(
         {
@@ -234,7 +237,7 @@ export async function POST(req: NextRequest) {
     await updatePaymentStatus(reference, 'confirmed', {
       transaction_id: payload.transaction_id,
       confirmed_at: confirmedAt,
-    });
+    }, { userId: storedPayment.user_id, sessionId });
 
     if (storedPayment.wallet_address) {
       await sendNotification({
@@ -256,7 +259,7 @@ export async function POST(req: NextRequest) {
     transaction_id: payload.transaction_id,
   });
 
-  await updatePaymentStatus(reference, 'failed', { reason: failureMessage });
+  await updatePaymentStatus(reference, 'failed', { reason: failureMessage }, { userId: storedPayment.user_id, sessionId });
 
   return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
 }
