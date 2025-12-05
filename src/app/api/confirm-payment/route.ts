@@ -12,7 +12,6 @@ import {
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
 import { sendNotification } from '@/lib/notificationService';
-import { resolveTokenFromAddress } from '@/lib/constants';
 import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
@@ -43,10 +42,7 @@ function shouldSimulateDeveloperPortal(tokenAddress?: string | null) {
   return tokenKey === 'WLD' || tokenKey === 'USDC' || tokenKey === 'MEMECOIN';
 }
 
-function buildSimulatedTransaction(
-  payload: MiniAppPaymentSuccessPayload,
-  storedPayment: PaymentRecord
-) {
+function buildSimulatedTransaction(payload: MiniAppPaymentSuccessPayload, storedPayment: PaymentRecord) {
   const payloadToken = payload.tokens?.[0];
   const amountFromPayload =
     payloadToken?.token_amount ?? payloadToken?.amount ?? (payload as unknown as { amount?: string })?.amount;
@@ -65,11 +61,37 @@ function buildSimulatedTransaction(
     amount: amountFromPayload ?? storedPayment.token_amount,
     wallet_address: walletFromPayload,
     from_address: walletFromPayload,
+    created_at: new Date().toISOString(),
   };
+}
+
+function parseTransactionTimestamp(transaction: Record<string, unknown>): Date | null {
+  const candidates = [
+    transaction.created_at,
+    (transaction as { createdAt?: unknown }).createdAt,
+    transaction.timestamp,
+    (transaction as { event_timestamp?: unknown }).event_timestamp,
+  ];
+
+  const firstValue = candidates.find((value) => value !== undefined && value !== null);
+
+  if (firstValue === undefined || firstValue === null) return null;
+
+  const numericValue = Number(firstValue);
+  const date = Number.isNaN(numericValue)
+    ? new Date(firstValue as string)
+    : new Date(numericValue > 1e12 ? numericValue : numericValue * 1000);
+
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export async function POST(req: NextRequest) {
   try {
+    const envError = validateCriticalEnvVars();
+    if (envError) {
+      return envError;
+    }
+
     const { payload, reference } = (await req.json()) as {
       payload: MiniAppPaymentSuccessPayload;
       reference: string;
@@ -77,6 +99,21 @@ export async function POST(req: NextRequest) {
 
     const sessionToken = req.cookies.get('session_token')?.value;
     const sessionId = sessionToken;
+
+    const originCheck = validateSameOrigin(req);
+
+    if (!originCheck.valid) {
+      await recordAuditEvent({
+        action: 'confirm_payment',
+        entity: 'payments',
+        entityId: reference,
+        sessionId,
+        status: 'error',
+        details: { reason: originCheck.reason },
+      });
+
+      return apiErrorResponse('FORBIDDEN', { message: 'Solicitud no autorizada', path: PATH });
+    }
 
     if (!sessionToken) {
       await recordAuditEvent({
@@ -86,54 +123,22 @@ export async function POST(req: NextRequest) {
         status: 'error',
         details: { reason: 'missing_session_token' },
       });
-  const envError = validateCriticalEnvVars();
-  if (envError) {
-    return envError;
-  }
 
-  const { payload, reference } = (await req.json()) as {
-    payload: MiniAppPaymentSuccessPayload;
-    reference: string;
-  };
+      return apiErrorResponse('SESSION_REQUIRED', {
+        message: 'Sesión no verificada. Realiza la verificación de World ID.',
+        path: PATH,
+      });
+    }
 
-  const sessionToken = req.cookies.get('session_token')?.value;
-  const sessionId = sessionToken;
+    if (!payload || !reference) {
+      return apiErrorResponse('INVALID_PAYLOAD', {
+        message: 'Payload y referencia son obligatorios',
+        path: PATH,
+      });
+    }
 
-  const originCheck = validateSameOrigin(req);
-
-  if (!originCheck.valid) {
-    await recordAuditEvent({
-      action: 'confirm_payment',
-      entity: 'payments',
-      entityId: reference,
-      sessionId,
-      status: 'error',
-      details: { reason: originCheck.reason },
-    });
-
-    return NextResponse.json({ success: false, message: 'Solicitud no autorizada' }, { status: 403 });
-  }
-
-  if (!sessionToken) {
-    await recordAuditEvent({
-      action: 'confirm_payment',
-      entity: 'payments',
-      entityId: reference,
-      sessionId,
-      status: 'error',
-      details: { reason: 'missing_session_token' },
-    });
-
-    return apiErrorResponse('SESSION_REQUIRED', {
-      message: 'Sesión no verificada. Realiza la verificación de World ID.',
-      path: PATH,
-    });
-  }
-
-      return NextResponse.json(
-        { success: false, message: 'Sesión no verificada. Realiza la verificación de World ID.' },
-        { status: 401 }
-      );
+    if (payload.status === 'error') {
+      return apiErrorResponse('PAYMENT_REJECTED', { message: 'Pago rechazado', path: PATH });
     }
 
     const sessionIdentity = await findWorldIdVerificationBySession(sessionToken);
@@ -148,92 +153,59 @@ export async function POST(req: NextRequest) {
         details: { reason: 'session_not_found' },
       });
 
-      return NextResponse.json(
-        { success: false, message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.' },
-        { status: 401 }
-      );
-    }
-
-    if (!payload || !reference) {
-      return NextResponse.json(
-        { success: false, message: 'Payload y referencia son obligatorios' },
-        { status: 400 }
-      );
-    }
-    return apiErrorResponse('SESSION_INVALID', {
-      message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
-      path: PATH,
-    });
-  }
-
-  if (!payload || !reference) {
-    return apiErrorResponse('INVALID_PAYLOAD', {
-      message: 'Payload y referencia son obligatorios',
-      path: PATH,
-    });
-  }
-
-  if (payload.status === 'error') {
-    return apiErrorResponse('PAYMENT_REJECTED', { message: 'Pago rechazado', path: PATH });
-  }
-
-    if (payload.status === 'error') {
-      return NextResponse.json({ success: false, message: 'Pago rechazado' }, { status: 400 });
+      return apiErrorResponse('SESSION_INVALID', {
+        message: 'Sesión inválida o expirada. Vuelve a verificar tu identidad.',
+        path: PATH,
+      });
     }
 
     const storedPayment = await findPaymentByReference(reference);
 
     if (!storedPayment) {
-      return NextResponse.json({ success: false, message: 'Referencia no encontrada' }, { status: 400 });
+      return apiErrorResponse('REFERENCE_NOT_FOUND', {
+        message: 'Referencia no encontrada',
+        path: PATH,
+        details: { reference },
+      });
     }
 
     if (storedPayment.status === 'confirmed') {
-      return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
+      logApiEvent('info', {
+        path: PATH,
+        action: 'already_confirmed',
+        reference,
+      });
+      return NextResponse.json({
+        success: true,
+        message: 'Pago ya confirmado previamente',
+        reference,
+        transactionId: storedPayment.transaction_id,
+      });
     }
 
-  if (!storedPayment) {
-    return apiErrorResponse('REFERENCE_NOT_FOUND', {
-      message: 'Referencia no encontrada',
-      path: PATH,
-      details: { reference },
-    });
-  }
+    const simulateDeveloperPortal = shouldSimulateDeveloperPortal(storedPayment.token_address);
 
-  if (storedPayment.status === 'confirmed') {
-    return NextResponse.json({
-      success: true,
-      message: 'Pago ya confirmado previamente',
-      reference,
-      transactionId: storedPayment.transaction_id,
-    });
-    logApiEvent('info', {
-      path: PATH,
-      action: 'already_confirmed',
-      reference,
-    });
-    return NextResponse.json({ success: true, message: 'Pago ya confirmado previamente' });
-  }
-
-  const simulateDeveloperPortal = shouldSimulateDeveloperPortal(storedPayment.token_address);
-  if (!process.env.APP_ID || !process.env.DEV_PORTAL_API_KEY) {
-    return apiErrorResponse('CONFIG_MISSING', {
-      message: 'Faltan APP_ID o DEV_PORTAL_API_KEY',
-      path: PATH,
-    });
-  }
-
-  let transaction: Record<string, unknown>;
-
-  if (simulateDeveloperPortal) {
-    transaction = buildSimulatedTransaction(payload, storedPayment);
-  } else {
     if (!process.env.APP_ID || !process.env.DEV_PORTAL_API_KEY) {
-      return NextResponse.json(
-        { success: false, message: 'Faltan APP_ID o DEV_PORTAL_API_KEY' },
-        { status: 500 }
-      );
+      return apiErrorResponse('CONFIG_MISSING', {
+        message: 'Faltan APP_ID o DEV_PORTAL_API_KEY',
+        path: PATH,
+      });
     }
 
+    let transaction: Record<string, unknown>;
+
+    if (simulateDeveloperPortal) {
+      transaction = buildSimulatedTransaction(payload, storedPayment);
+    } else {
+      const response = await fetch(
+        `https://developer.worldcoin.org/api/v2/minikit/transaction/${payload.transaction_id}?app_id=${process.env.APP_ID}&type=payment`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
+          },
+        }
+      );
     // 2. Consultar estado del pago en Developer Portal API
     const { response } = await performDeveloperRequest(
       () =>
@@ -264,308 +236,335 @@ export async function POST(req: NextRequest) {
     transaction = await response.json();
   }
 
-  const transactionWallet =
-    transaction.wallet_address ||
-    transaction.walletAddress ||
-    transaction.from_address ||
-    transaction.from?.address ||
-    payload?.wallet_address ||
-    payload?.from_address;
-
-  const transactionStatus = (transaction.transaction_status || transaction.status || '').toString().toLowerCase();
-  const transactionReference = transaction.reference || transaction.transaction_reference;
-
-  if (transactionReference !== reference) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      {
-        reason: 'Referencia devuelta no coincide con el pago iniciado',
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-    return apiErrorResponse('PAYMENT_STATUS_ERROR', {
-      message: 'La referencia devuelta no coincide con el pago esperado',
-      path: PATH,
-      details: { expected: reference, received: transactionReference },
-    });
-  }
-
-  const transactionToken =
-    transaction.token || transaction.token_symbol || transaction.payment_token || transaction.asset;
-  const transactionAmountRaw =
-    transaction.amount || transaction.token_amount || transaction.tokens?.[0]?.amount || transaction.tokens?.[0]?.token_amount;
-  let transactionAmount: bigint | undefined;
-  try {
-    transactionAmount = transactionAmountRaw !== undefined ? normalizeTokenAmount(transactionAmountRaw) : undefined;
-  } catch (error) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      { reason: 'Monto devuelto no es válido' },
-      {
-        userId: storedPayment.user_id,
-        sessionId,
+      if (!response.ok) {
+        return apiErrorResponse('UPSTREAM_ERROR', {
+          message: 'No se pudo verificar el pago en Developer Portal',
+          path: PATH,
+          details: { status: response.status },
+        });
       }
-    );
-    return apiErrorResponse('TRANSACTION_INVALID', {
-      message: 'Monto de la transacción no válido',
-      path: PATH,
-      details: { amount: transactionAmountRaw, error: (error as Error)?.message },
-    });
-  }
 
-  const normalizedExpectedToken = storedPayment.token_address
-    ? normalizeTokenIdentifier(storedPayment.token_address)
-    : undefined;
-  const expectedTokenKey = normalizedExpectedToken
-    ? resolveTokenFromAddress(normalizedExpectedToken)
-    : null;
-  const amountTolerance = expectedTokenKey ? TOKEN_AMOUNT_TOLERANCE[expectedTokenKey] ?? 0n : 0n;
+      transaction = await response.json();
+    }
 
-  if (storedPayment.session_token && storedPayment.session_token !== sessionToken) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      {
-        reason: 'La sesión actual no coincide con la sesión del pago',
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
+    const transactionWallet =
+      transaction.wallet_address ||
+      (transaction as { walletAddress?: string }).walletAddress ||
+      transaction.from_address ||
+      (transaction as { from?: { address?: string } }).from?.address ||
+      payload?.wallet_address ||
+      payload?.from_address;
 
-    return apiErrorResponse('SESSION_INVALID', {
-      message: 'La referencia pertenece a otra sesión',
-      path: PATH,
-      details: { expectedSession: storedPayment.session_token, sessionId },
-    });
-  }
+    const transactionStatus = (transaction.transaction_status || transaction.status || '').toString().toLowerCase();
+    const transactionReference = transaction.reference || transaction.transaction_reference;
 
-  const verifiedIdentity = sessionIdentity;
-
-  if (storedPayment.user_id && storedPayment.user_id !== verifiedIdentity.user_id) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      {
-        reason: 'La sesión no coincide con el usuario asociado al pago',
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-    return apiErrorResponse('IDENTITY_MISMATCH', {
-      message: 'El pago pertenece a otro usuario verificado',
-      path: PATH,
-      details: { expectedUser: storedPayment.user_id, sessionUser: verifiedIdentity.user_id },
-    });
-  }
-
-  if (storedPayment.nullifier_hash && !verifiedIdentity?.nullifier_hash) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      {
-        reason: 'No se pudo validar la identidad asociada al pago',
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-    return apiErrorResponse('IDENTITY_MISMATCH', {
-      message: 'La sesión verificada es requerida para confirmar el pago',
-      path: PATH,
-      details: { expectedNullifier: storedPayment.nullifier_hash },
-    });
-  }
-
-  if (
-    storedPayment.nullifier_hash &&
-    verifiedIdentity?.nullifier_hash &&
-    storedPayment.nullifier_hash !== verifiedIdentity.nullifier_hash
-  ) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      {
-        reason: 'La identidad verificada no coincide con la que inició el pago',
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-    return apiErrorResponse('IDENTITY_MISMATCH', {
-      message: 'El pago pertenece a otra identidad verificada',
-      path: PATH,
-      details: {
-        expected: storedPayment.nullifier_hash,
-        received: verifiedIdentity.nullifier_hash,
-      },
-    });
-  }
-
-  if (
-    normalizedExpectedToken &&
-    transactionToken &&
-    !tokensMatch(normalizedExpectedToken, normalizeTokenIdentifier(transactionToken))
-  ) {
-    await updatePaymentStatus(
-      reference,
-      'failed',
-      {
-        reason: 'Token no coincide con el pago esperado',
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-    return apiErrorResponse('TOKEN_MISMATCH', {
-      message: 'El token cobrado no coincide con el pago solicitado',
-      path: PATH,
-      details: { expected: normalizedExpectedToken, received: transactionToken },
-    });
-  }
-
-  if (transactionAmount !== undefined && storedPayment.token_amount) {
-    const expected = BigInt(storedPayment.token_amount);
-    const difference = transactionAmount >= expected ? transactionAmount - expected : expected - transactionAmount;
-
-    if (difference > amountTolerance) {
+    if (transactionReference !== reference) {
       await updatePaymentStatus(
         reference,
         'failed',
         {
-          reason: 'Monto no coincide con el pago esperado',
+          reason: 'Referencia devuelta no coincide con el pago iniciado',
         },
-      { userId: storedPayment.user_id, sessionId }
-    );
+        { userId: storedPayment.user_id, sessionId }
+      );
 
-      return apiErrorResponse('AMOUNT_MISMATCH', {
-        message: 'El monto cobrado no coincide con el pago solicitado',
+      return apiErrorResponse('PAYMENT_STATUS_ERROR', {
+        message: 'La referencia devuelta no coincide con el pago esperado',
         path: PATH,
-        details: { expected: expected.toString(), received: transactionAmount?.toString() },
-      });
-    }
-  }
-
-  if (storedPayment.wallet_address) {
-    if (!transactionWallet) {
-      await updatePaymentStatus(
-        reference,
-        'failed',
-        {
-          reason: 'No se pudo verificar la wallet que realizó el pago',
-        },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-      return apiErrorResponse('TRANSACTION_INVALID', {
-        message: 'No se pudo validar la wallet del pago',
-        path: PATH,
-        details: { transactionId: payload.transaction_id },
+        details: { expected: reference, received: transactionReference },
       });
     }
 
-    const sameWallet =
-      storedPayment.wallet_address.toLowerCase() === transactionWallet.toString().toLowerCase();
+    const transactionTimestamp = parseTransactionTimestamp(transaction);
+    if (transactionTimestamp && storedPayment.created_at) {
+      const paymentCreatedAt = new Date(storedPayment.created_at);
 
-    if (!sameWallet) {
-      await updatePaymentStatus(
-        reference,
-        'failed',
-        {
-          reason: 'La wallet cobradora no coincide con la que inició el pago',
-        },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-      return apiErrorResponse('WALLET_MISMATCH', {
-        message: 'La wallet que pagó no coincide con la esperada',
-        path: PATH,
-        details: { expected: storedPayment.wallet_address, received: transactionWallet },
-      });
-    }
-  }
-
-  if (storedPayment.type === 'tournament') {
-    const transactionTournamentId = transaction.tournamentId || transaction.tournament_id || transaction.metadata?.tournamentId;
-    if (storedPayment.tournament_id && transactionTournamentId && storedPayment.tournament_id !== transactionTournamentId) {
-      await updatePaymentStatus(
-        reference,
-        'failed',
-        {
-          reason: 'Referencia de torneo no coincide con el flujo solicitado',
-        },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-      return apiErrorResponse('TOURNAMENT_MISMATCH', {
-        message: 'La referencia está asociada a otro torneo, no se puede reutilizar',
-        path: PATH,
-        details: { expected: storedPayment.tournament_id, received: transactionTournamentId },
-      });
-    }
-  }
-
-  const isSuccessful = ['success', 'confirmed'].includes(transactionStatus);
-
-  if (isSuccessful) {
-    const confirmedAt = new Date().toISOString();
-    const transactionId = payload.transaction_id;
-    await updatePaymentStatus(
-      reference,
-      'confirmed',
-      {
-        transaction_id: transactionId,
-        confirmed_at: confirmedAt,
-      },
-      { userId: storedPayment.user_id, sessionId }
-    );
-
-    if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
-      const tournament = await getTournament(storedPayment.tournament_id);
-      if (tournament) {
-        await incrementTournamentPool(tournament);
-      }
-    }
-
-    if (storedPayment.wallet_address) {
-      const notificationResult = await sendNotification({
-        walletAddresses: [storedPayment.wallet_address],
-        title: 'Pago confirmado',
-        message: 'Pago confirmado, ya puedes unirte al torneo',
-        miniAppPath: storedPayment.tournament_id
-          ? `/tournament/${storedPayment.tournament_id}`
-          : '/tournament',
-      });
-
-      if (!notificationResult.success) {
-        console.error('No se pudo enviar la notificación de pago confirmado', {
+      if (!Number.isNaN(paymentCreatedAt.getTime()) && transactionTimestamp < paymentCreatedAt) {
+        await updatePaymentStatus(
           reference,
-          walletAddress: storedPayment.wallet_address,
-          errorMessage: notificationResult.message,
+          'failed',
+          { reason: 'La transacción se creó antes del registro del pago' },
+          { userId: storedPayment.user_id, sessionId }
+        );
+
+        return apiErrorResponse('TRANSACTION_INVALID', {
+          message: 'La transacción pertenece a un entorno o referencia anterior',
+          path: PATH,
+          details: {
+            transactionCreatedAt: transactionTimestamp.toISOString(),
+            paymentCreatedAt: paymentCreatedAt.toISOString(),
+          },
         });
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      message: 'Pago confirmado',
-      reference,
-      transactionId,
-    });
-    logApiEvent('info', {
+    const transactionToken =
+      transaction.token || transaction.token_symbol || transaction.payment_token || (transaction as { asset?: string }).asset;
+    const transactionAmountRaw =
+      transaction.amount ||
+      transaction.token_amount ||
+      (transaction as { tokens?: { amount?: string; token_amount?: string }[] }).tokens?.[0]?.amount ||
+      (transaction as { tokens?: { amount?: string; token_amount?: string }[] }).tokens?.[0]?.token_amount;
+    let transactionAmount: bigint | undefined;
+    try {
+      transactionAmount = transactionAmountRaw !== undefined ? normalizeTokenAmount(transactionAmountRaw) : undefined;
+    } catch (error) {
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        { reason: 'Monto devuelto no es válido' },
+        {
+          userId: storedPayment.user_id,
+          sessionId,
+        }
+      );
+      return apiErrorResponse('TRANSACTION_INVALID', {
+        message: 'Monto de la transacción no válido',
+        path: PATH,
+        details: { amount: transactionAmountRaw, error: (error as Error)?.message },
+      });
+    }
+
+    const normalizedExpectedToken = storedPayment.token_address
+      ? normalizeTokenIdentifier(storedPayment.token_address)
+      : undefined;
+    const expectedTokenKey = normalizedExpectedToken ? resolveTokenFromAddress(normalizedExpectedToken) : null;
+    const amountTolerance = expectedTokenKey ? TOKEN_AMOUNT_TOLERANCE[expectedTokenKey] ?? 0n : 0n;
+
+    if (storedPayment.session_token && storedPayment.session_token !== sessionToken) {
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'La sesión actual no coincide con la sesión del pago',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
+
+      return apiErrorResponse('SESSION_INVALID', {
+        message: 'La referencia pertenece a otra sesión',
+        path: PATH,
+        details: { expectedSession: storedPayment.session_token, sessionId },
+      });
+    }
+
+    const verifiedIdentity = sessionIdentity;
+
+    if (storedPayment.user_id && storedPayment.user_id !== verifiedIdentity.user_id) {
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'La sesión no coincide con el usuario asociado al pago',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
+
+      return apiErrorResponse('IDENTITY_MISMATCH', {
+        message: 'El pago pertenece a otro usuario verificado',
+        path: PATH,
+        details: { expectedUser: storedPayment.user_id, sessionUser: verifiedIdentity.user_id },
+      });
+    }
+
+    if (storedPayment.nullifier_hash && !verifiedIdentity?.nullifier_hash) {
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'No se pudo validar la identidad asociada al pago',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
+
+      return apiErrorResponse('IDENTITY_MISMATCH', {
+        message: 'La sesión verificada es requerida para confirmar el pago',
+        path: PATH,
+        details: { expectedNullifier: storedPayment.nullifier_hash },
+      });
+    }
+
+    if (storedPayment.nullifier_hash && verifiedIdentity?.nullifier_hash && storedPayment.nullifier_hash !== verifiedIdentity.nullifier_hash) {
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        {
+          reason: 'La identidad verificada no coincide con la que inició el pago',
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
+
+      return apiErrorResponse('IDENTITY_MISMATCH', {
+        message: 'El pago pertenece a otro usuario',
+        path: PATH,
+        details: { expectedNullifier: storedPayment.nullifier_hash, received: verifiedIdentity.nullifier_hash },
+      });
+    }
+
+    if (normalizedExpectedToken && transactionToken && !tokensMatch(normalizeTokenIdentifier(transactionToken), normalizedExpectedToken)) {
+      await updatePaymentStatus(
+        reference,
+        'failed',
+        { reason: 'El token cobrado no coincide con el solicitado' },
+        { userId: storedPayment.user_id, sessionId }
+      );
+
+      return apiErrorResponse('TOKEN_MISMATCH', {
+        message: 'El token cobrado no coincide con el pago solicitado',
+        path: PATH,
+        details: {
+          expected: normalizedExpectedToken,
+          received: normalizeTokenIdentifier(transactionToken),
+        },
+      });
+    }
+
+    if (transactionAmount !== undefined && storedPayment.token_amount) {
+      const expected = normalizeTokenAmount(storedPayment.token_amount);
+      const difference = transactionAmount >= expected ? transactionAmount - expected : expected - transactionAmount;
+
+      if (difference > amountTolerance) {
+        await updatePaymentStatus(
+          reference,
+          'failed',
+          { reason: 'El monto cobrado no coincide con el pago solicitado' },
+          { userId: storedPayment.user_id, sessionId }
+        );
+
+        return apiErrorResponse('AMOUNT_MISMATCH', {
+          message: 'El monto cobrado no coincide con el pago solicitado',
+          path: PATH,
+          details: { expected: expected.toString(), received: transactionAmount?.toString() },
+        });
+      }
+    }
+
+    if (storedPayment.wallet_address) {
+      if (!transactionWallet) {
+        await updatePaymentStatus(
+          reference,
+          'failed',
+          {
+            reason: 'No se pudo verificar la wallet que realizó el pago',
+          },
+          { userId: storedPayment.user_id, sessionId }
+        );
+
+        return apiErrorResponse('TRANSACTION_INVALID', {
+          message: 'No se pudo validar la wallet del pago',
+          path: PATH,
+          details: { transactionId: payload.transaction_id },
+        });
+      }
+
+      const sameWallet = storedPayment.wallet_address.toLowerCase() === transactionWallet.toString().toLowerCase();
+
+      if (!sameWallet) {
+        await updatePaymentStatus(
+          reference,
+          'failed',
+          {
+            reason: 'La wallet cobradora no coincide con la que inició el pago',
+          },
+          { userId: storedPayment.user_id, sessionId }
+        );
+
+        return apiErrorResponse('WALLET_MISMATCH', {
+          message: 'La wallet que pagó no coincide con la esperada',
+          path: PATH,
+          details: { expected: storedPayment.wallet_address, received: transactionWallet },
+        });
+      }
+    }
+
+    if (storedPayment.type === 'tournament') {
+      const transactionTournamentId =
+        (transaction as { tournamentId?: string }).tournamentId ||
+        (transaction as { tournament_id?: string }).tournament_id ||
+        (transaction as { metadata?: { tournamentId?: string } }).metadata?.tournamentId;
+
+      if (storedPayment.tournament_id && transactionTournamentId && storedPayment.tournament_id !== transactionTournamentId) {
+        await updatePaymentStatus(
+          reference,
+          'failed',
+          {
+            reason: 'Referencia de torneo no coincide con el flujo solicitado',
+          },
+          { userId: storedPayment.user_id, sessionId }
+        );
+
+        return apiErrorResponse('TOURNAMENT_MISMATCH', {
+          message: 'La referencia está asociada a otro torneo, no se puede reutilizar',
+          path: PATH,
+          details: { expected: storedPayment.tournament_id, received: transactionTournamentId },
+        });
+      }
+    }
+
+    const isSuccessful = ['success', 'confirmed'].includes(transactionStatus);
+
+    if (isSuccessful) {
+      const confirmedAt = new Date().toISOString();
+      const transactionId = payload.transaction_id;
+      await updatePaymentStatus(
+        reference,
+        'confirmed',
+        {
+          transaction_id: transactionId,
+          confirmed_at: confirmedAt,
+        },
+        { userId: storedPayment.user_id, sessionId }
+      );
+
+      logApiEvent('info', {
+        path: PATH,
+        action: 'confirmed',
+        reference,
+        transactionId: payload.transaction_id,
+        userId: storedPayment.user_id,
+      });
+
+      if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
+        const tournament = await getTournament(storedPayment.tournament_id);
+        if (tournament) {
+          await incrementTournamentPool(tournament);
+        }
+      }
+
+      if (storedPayment.wallet_address) {
+        const notificationResult = await sendNotification({
+          walletAddresses: [storedPayment.wallet_address],
+          title: 'Pago confirmado',
+          message: 'Pago confirmado, ya puedes unirte al torneo',
+          miniAppPath: storedPayment.tournament_id ? `/tournament/${storedPayment.tournament_id}` : '/tournament',
+        });
+
+        if (!notificationResult.success) {
+          console.error('No se pudo enviar la notificación de pago confirmado', {
+            reference,
+            walletAddress: storedPayment.wallet_address,
+            errorMessage: notificationResult.message,
+          });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: 'Pago confirmado',
+        reference,
+        transactionId,
+      });
+    }
+
+    const failureMessage = getFailureMessage(transactionStatus);
+
+    await updatePaymentStatus(reference, 'failed', { reason: failureMessage }, { userId: storedPayment.user_id, sessionId });
+
+    return apiErrorResponse('PAYMENT_STATUS_ERROR', {
+      message: failureMessage,
       path: PATH,
-      action: 'confirmed',
-      reference,
-      transactionId: payload.transaction_id,
-      userId: storedPayment.user_id,
+      details: { reference, transactionStatus, transaction_id: payload.transaction_id },
     });
-
-    return NextResponse.json({ success: true, message: 'Pago confirmado' });
-  }
-
-  const failureMessage = getFailureMessage(transactionStatus);
-
-  await updatePaymentStatus(reference, 'failed', { reason: failureMessage }, { userId: storedPayment.user_id, sessionId });
-
-  return NextResponse.json({ success: false, message: failureMessage }, { status: 400 });
   } catch (error) {
     if (isLocalStorageDisabled(error)) {
       return NextResponse.json(
@@ -583,11 +582,6 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
-  return apiErrorResponse('PAYMENT_STATUS_ERROR', {
-    message: failureMessage,
-    path: PATH,
-    details: { reference, transactionStatus, transaction_id: payload.transaction_id },
-  });
 }
 
 function getFailureMessage(status: string) {

@@ -171,4 +171,94 @@ describe('API real flow with HTTP mocks', () => {
       expect.objectContaining({ method: 'POST' })
     );
   });
+
+  it('rechaza una transacción creada antes del pago iniciado', async () => {
+    const { insertWorldIdVerification, findPaymentByReference } = await import('@/lib/database');
+    const { POST: initiatePayment } = await import('@/app/api/initiate-payment/route');
+    const { POST: confirmPayment } = await import('@/app/api/confirm-payment/route');
+
+    await insertWorldIdVerification({
+      nullifier_hash: 'nullifier-hash',
+      wallet_address: walletAddress,
+      action: 'verify',
+      user_id: userId,
+      session_token: sessionToken,
+      verification_level: 'orb',
+      merkle_root: 'root',
+    });
+
+    const initiateRequest = buildNextRequest(
+      'http://localhost/api/initiate-payment',
+      {
+        reference,
+        type: 'tournament',
+        token: SUPPORTED_TOKENS.WLD.address,
+        amount: 1,
+        tournamentId,
+        walletAddress,
+        userId,
+      },
+      { cookies: { session_token: sessionToken } }
+    );
+
+    const initiateResponse = await initiatePayment(initiateRequest);
+    await expect(initiateResponse.json()).resolves.toEqual({
+      success: true,
+      reference,
+      tournamentId,
+    });
+
+    const createdPayment = await findPaymentByReference(reference);
+    const paymentCreatedAt = createdPayment?.created_at ?? new Date().toISOString();
+    const olderTimestamp = new Date(new Date(paymentCreatedAt).getTime() - 60 * 60 * 1000).toISOString();
+
+    const fetchMock = jest.fn(async (url: RequestInfo | URL) => {
+      const asString = url.toString();
+
+      if (asString.includes('/transaction/')) {
+        return {
+          ok: true,
+          json: async () => ({
+            transaction_status: 'confirmed',
+            reference,
+            token: SUPPORTED_TOKENS.WLD.address,
+            amount: createdPayment?.token_amount,
+            wallet_address: walletAddress,
+            tournament_id: tournamentId,
+            created_at: olderTimestamp,
+          }),
+        } as Response;
+      }
+
+      throw new Error(`Unexpected fetch call: ${asString}`);
+    });
+
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const confirmRequest = buildNextRequest(
+      'http://localhost/api/confirm-payment',
+      {
+        reference,
+        payload: {
+          status: 'success',
+          token: SUPPORTED_TOKENS.WLD.symbol,
+          token_amount: createdPayment?.token_amount,
+          transaction_id: 'tx-early',
+          wallet_address: walletAddress,
+        },
+      },
+      { cookies: { session_token: sessionToken } }
+    );
+
+    const confirmResponse = await confirmPayment(confirmRequest);
+    const confirmBody = await confirmResponse.json();
+
+    expect(confirmResponse.status).toBe(400);
+    expect(confirmBody).toEqual(
+      expect.objectContaining({ success: false, code: 'TRANSACTION_INVALID' })
+    );
+
+    const failedPayment = await findPaymentByReference(reference);
+    expect(failedPayment?.status).toBe('failed');
+  });
 });
