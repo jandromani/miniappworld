@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import {
   addParticipantRecord,
-  appendLeaderboardEntry,
   getTournament,
   participantExists,
+  updateTournamentPoolAndLeaderboardEntry,
   serializeTournament,
   validateTokenForTournament,
 } from '@/lib/server/tournamentData';

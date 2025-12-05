@@ -913,6 +913,75 @@ export async function upsertTournamentResult(
   return result;
 }
 
+export async function updateTournamentResultAndPool(
+  tournamentId: string,
+  result: Omit<TournamentResultRecord, 'tournament_id'>,
+  context: AuditContext = {}
+): Promise<{ tournament: TournamentRecord; result: TournamentResultRecord }> {
+  const outcome = await withDbTransaction(async (db) => {
+    const tournamentIndex = db.tournaments.findIndex(
+      (entry) => entry.tournament_id === tournamentId
+    );
+    if (tournamentIndex === -1) {
+      const error = new Error('Tournament not found');
+      (error as NodeJS.ErrnoException).code = 'TOURNAMENT_NOT_FOUND';
+      throw error;
+    }
+
+    assertUserExists(db, result.user_id, context);
+
+    const tournament = db.tournaments[tournamentIndex];
+    const updatedTournament: TournamentRecord = {
+      ...tournament,
+      prize_pool: (
+        BigInt(tournament.prize_pool ?? '0') + BigInt(tournament.buy_in_amount)
+      ).toString(),
+    };
+
+    db.tournaments[tournamentIndex] = updatedTournament;
+
+    const nextResult: TournamentResultRecord = {
+      tournament_id: tournamentId,
+      ...result,
+    };
+
+    const resultIndex = db.tournament_results.findIndex(
+      (entry) => entry.tournament_id === tournamentId && entry.user_id === result.user_id
+    );
+
+    if (resultIndex >= 0) {
+      db.tournament_results[resultIndex] = {
+        ...db.tournament_results[resultIndex],
+        ...nextResult,
+      };
+    } else {
+      db.tournament_results.push(nextResult);
+    }
+
+    return { tournament: updatedTournament, result: nextResult };
+  });
+
+  await appendAuditLog({
+    action: 'upsert_tournament',
+    entity: 'tournaments',
+    entityId: tournamentId,
+    timestamp: new Date().toISOString(),
+    status: 'success',
+  });
+
+  await appendAuditLog({
+    action: 'upsert_tournament_result',
+    entity: 'tournament_results',
+    entityId: `${tournamentId}:${outcome.result.user_id}`,
+    timestamp: new Date().toISOString(),
+    userId: context.userId ?? outcome.result.user_id,
+    sessionId: context.sessionId,
+    status: 'success',
+  });
+
+  return outcome;
+}
+
 export async function listTournamentResults(tournamentId: string): Promise<TournamentResultRecord[]> {
   return withDbSnapshot((db) =>
     db.tournament_results.filter((entry) => entry.tournament_id === tournamentId)
