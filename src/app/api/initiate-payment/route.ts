@@ -6,6 +6,7 @@ import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 export async function POST(req: NextRequest) {
   const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
   const userId = req.headers.get('x-user-id') ?? bodyUserId ?? 'anonymous';
+  const sessionId = req.headers.get('x-session-id') ?? req.cookies.get('session_token')?.value ?? undefined;
 
   if (!reference || !type) {
     return NextResponse.json(
@@ -50,7 +51,7 @@ export async function POST(req: NextRequest) {
     recipient_address: process.env.NEXT_PUBLIC_RECEIVER_ADDRESS,
     user_id: userId,
     wallet_address: walletAddress,
-  });
+  }, { userId, sessionId });
 
   console.log('Pago iniciado:', { reference, type, token, amount, tournamentId });
 
