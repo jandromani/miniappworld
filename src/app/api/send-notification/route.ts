@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
 
 type RateLimitEntry = {
   windowStart: number;
@@ -119,6 +120,11 @@ function logAudit(event: {
 }
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const clientIp = getClientIp(req);
   const providedKey = req.headers.get('x-api-key');
 

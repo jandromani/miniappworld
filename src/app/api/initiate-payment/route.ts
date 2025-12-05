@@ -7,10 +7,16 @@ import {
 } from '@/lib/database';
 import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
+import { validateCriticalEnvVars } from '@/lib/envValidation';
 
 const SESSION_COOKIE = 'session_token';
 
 export async function POST(req: NextRequest) {
+  const envError = validateCriticalEnvVars();
+  if (envError) {
+    return envError;
+  }
+
   const { reference, type, token, amount, tournamentId, walletAddress, userId: bodyUserId } = await req.json();
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
 
