@@ -2,6 +2,7 @@ import { sendNotification } from '@/lib/notificationService';
 import { findPaymentByReference, listTournamentParticipants } from '@/lib/database';
 import { listTournaments } from '@/lib/server/tournamentData';
 import { Tournament } from '@/lib/types';
+import { isValidEvmAddress } from '@/lib/addressValidation';
 
 const JOB_INTERVAL_MS = 60_000;
 const MAX_WALLETS_PER_REQUEST = 50;
@@ -19,9 +20,7 @@ function getState() {
   return globalState.tournamentNotificationState;
 }
 
-function isValidWalletAddress(address?: string) {
-  return !!address && /^0x[a-fA-F0-9]{40}$/.test(address);
-}
+const isValidWalletAddress = (address?: string) => isValidEvmAddress(address);
 
 async function getParticipantWallets(tournamentId: string) {
   const participants = await listTournamentParticipants(tournamentId);

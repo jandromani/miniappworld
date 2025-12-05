@@ -8,14 +8,20 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
-    "test:ci": "jest --runInBand"
+    "test:ci": "jest --runInBand",
+    "data:snapshot": "node scripts/dataSnapshots.js create",
+    "data:snapshot:list": "node scripts/dataSnapshots.js list",
+    "data:snapshot:restore": "node scripts/dataSnapshots.js restore",
+    "data:snapshot:verify": "node scripts/dataSnapshots.js verify"
   },
   "dependencies": {
     "@worldcoin/minikit-js": "^0.0.10",
     "@aws-sdk/client-cloudwatch-logs": "^3.679.0",
     "@upstash/ratelimit": "^1.2.0",
     "@upstash/redis": "^1.31.5",
+    "ethers": "^6.13.4",
     "next": "14.2.5",
+    "prom-client": "^15.1.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "sanitize-html": "^2.13.0",
@@ -23,6 +29,8 @@
     "viem": "^2.21.28"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.0.1",
     "@types/node": "22.7.4",
     "@types/react": "18.3.10",
     "@types/react-dom": "18.3.0",

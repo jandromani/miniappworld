@@ -19,11 +19,20 @@ import {
   getTokenSymbolByAddress,
   resolveTokenFromAddress,
 } from '@/lib/constants';
+import { normalizeTokenIdentifier } from '@/lib/tokenNormalization';
 
 function formatToken(amount: string, tokenAddress: string) {
-  const decimals = getTokenDecimalsByAddress(tokenAddress);
-  const value = Number(amount) / 10 ** decimals;
-  return value >= 0.01 ? `${value.toFixed(2)} ${getTokenSymbolByAddress(tokenAddress)}` : `${amount} (base)`;
+  try {
+    const normalizedToken = normalizeTokenIdentifier(tokenAddress);
+    const decimals = getTokenDecimalsByAddress(normalizedToken);
+    const value = Number(amount) / 10 ** decimals;
+    return value >= 0.01
+      ? `${value.toFixed(2)} ${getTokenSymbolByAddress(normalizedToken)}`
+      : `${amount} (base)`;
+  } catch (error) {
+    console.warn('No se pudo formatear el token', tokenAddress, error);
+    return amount;
+  }
 }
 
 function useTournamentData(tournamentId: string) {
@@ -106,8 +115,14 @@ export default function TournamentDetailsPage({ params }: { params: { tournament
   useEffect(() => {
     if (!tournament) return;
 
-    const preferredToken = resolveTokenFromAddress(tournament.buyInToken);
-    setSelectedToken(preferredToken ?? acceptedTokens[0] ?? null);
+    try {
+      const normalizedBuyIn = normalizeTokenIdentifier(tournament.buyInToken);
+      const preferredToken = resolveTokenFromAddress(normalizedBuyIn);
+      setSelectedToken(preferredToken ?? acceptedTokens[0] ?? null);
+    } catch (error) {
+      console.warn('Token de buy-in inválido', tournament.buyInToken, error);
+      setSelectedToken(acceptedTokens[0] ?? null);
+    }
   }, [acceptedTokens, tournament]);
 
   const canJoin = useMemo(() => {

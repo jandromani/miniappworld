@@ -1,3 +1,4 @@
+import { checksumAddress, isValidEvmAddress } from './addressValidation';
 import { MEMECOIN_CONFIG, SUPPORTED_TOKENS, WLD_ADDRESS, USDC_ADDRESS } from './constants';
 
 const SYMBOL_TO_ADDRESS: Record<string, string> = {
@@ -8,7 +9,7 @@ const SYMBOL_TO_ADDRESS: Record<string, string> = {
 };
 
 export function isAddress(value: string) {
-  return /^0x[a-fA-F0-9]{40}$/.test(value);
+  return isValidEvmAddress(value);
 }
 
 export function isSupportedTokenSymbol(value?: string): boolean {
@@ -30,11 +31,11 @@ export function normalizeTokenIdentifier(token?: string): string {
   const upper = trimmed.toUpperCase();
 
   if (SYMBOL_TO_ADDRESS[upper]) {
-    return SYMBOL_TO_ADDRESS[upper].toLowerCase();
+    return checksumAddress(SYMBOL_TO_ADDRESS[upper]).toLowerCase();
   }
 
   if (isAddress(trimmed)) {
-    return trimmed.toLowerCase();
+    return checksumAddress(trimmed).toLowerCase();
   }
 
   const found = Object.values(SUPPORTED_TOKENS).find(
@@ -42,7 +43,7 @@ export function normalizeTokenIdentifier(token?: string): string {
   );
 
   if (found?.address && isAddress(found.address)) {
-    return found.address.toLowerCase();
+    return checksumAddress(found.address).toLowerCase();
   }
 
   throw new Error(`Token ${token} no es válido o no está soportado`);

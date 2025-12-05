@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MiniKit, VerificationLevel } from '@worldcoin/minikit-js';
 
 type PlayerStats = {
@@ -27,6 +27,13 @@ export default function ProfilePage() {
   const [avatarUrl, setAvatarUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const errorRef = useRef<HTMLParagraphElement | null>(null);
+
+  useEffect(() => {
+    if (error && errorRef.current) {
+      errorRef.current.focus();
+    }
+  }, [error]);
 
   const loadStats = async () => {
     setLoading(true);
@@ -147,7 +154,17 @@ export default function ProfilePage() {
         <p className="text-gray-600">Consulta tu progreso y personaliza cómo te ven otros jugadores.</p>
       </header>
 
-      {error && <p className="text-red-600">{error}</p>}
+      {error && (
+        <p
+          className="text-red-600"
+          role="alert"
+          aria-live="assertive"
+          tabIndex={-1}
+          ref={errorRef}
+        >
+          {error}
+        </p>
+      )}
 
       {loading && <p className="text-gray-600">Cargando perfil...</p>}
 
@@ -158,6 +175,7 @@ export default function ProfilePage() {
             onClick={verifyUser}
             disabled={verifying}
             className="px-4 py-2 bg-blue-600 text-white rounded-md disabled:opacity-70"
+            aria-busy={verifying}
           >
             {verifying ? 'Verificando...' : 'Verificar con World ID'}
           </button>
@@ -203,7 +221,9 @@ export default function ProfilePage() {
           <section className="rounded-lg border p-5 shadow-sm bg-white space-y-4">
             <h3 className="text-lg font-semibold">Personaliza tu perfil</h3>
             <div className="space-y-2">
-              <label className="block text-sm font-medium">Alias</label>
+              <label className="block text-sm font-medium" htmlFor="player-alias">
+                Alias
+              </label>
               <input
                 type="text"
                 value={alias}
@@ -211,17 +231,21 @@ export default function ProfilePage() {
                 className="w-full rounded-md border px-3 py-2"
                 placeholder="Ingresa tu alias"
                 maxLength={32}
+                id="player-alias"
               />
               <p className="text-xs text-gray-500">Entre 3 y 32 caracteres.</p>
             </div>
             <div className="space-y-2">
-              <label className="block text-sm font-medium">Avatar (URL)</label>
+              <label className="block text-sm font-medium" htmlFor="player-avatar">
+                Avatar (URL)
+              </label>
               <input
                 type="url"
                 value={avatarUrl}
                 onChange={(e) => setAvatarUrl(e.target.value)}
                 className="w-full rounded-md border px-3 py-2"
                 placeholder="https://..."
+                id="player-avatar"
               />
               <p className="text-xs text-gray-500">Usa una URL pública a tu imagen.</p>
             </div>
@@ -229,6 +253,7 @@ export default function ProfilePage() {
               onClick={handleSaveProfile}
               disabled={saving}
               className="w-full px-4 py-2 bg-green-600 text-white rounded-md disabled:opacity-70"
+              aria-busy={saving}
             >
               {saving ? 'Guardando...' : 'Guardar cambios'}
             </button>
@@ -236,6 +261,7 @@ export default function ProfilePage() {
               onClick={verifyUser}
               disabled={verifying}
               className="w-full px-4 py-2 bg-blue-600 text-white rounded-md disabled:opacity-70"
+              aria-busy={verifying}
             >
               {verifying ? 'Verificando...' : 'Reverificar World ID'}
             </button>

@@ -1,4 +1,5 @@
 import { fetchWithBackoff } from './fetchWithBackoff';
+import { performDeveloperRequest } from './developerPortalClient';
 
 type NotifyParams = {
   walletAddresses: string[];
@@ -34,6 +35,34 @@ export async function sendNotification({ walletAddresses, title, message, miniAp
 
     if (!response.ok) {
       return { success: false, message: await response.text() };
+    const { response } = await performDeveloperRequest(
+      () =>
+        fetch('https://developer.worldcoin.org/api/v2/minikit/send-notification', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            app_id: process.env.APP_ID,
+            wallet_addresses: walletAddresses,
+            localisations: [
+              { language: 'en', title, message },
+              { language: 'es', title, message },
+            ],
+            mini_app_path: miniAppPath,
+          }),
+        }),
+      {
+        endpoint: '/api/v2/minikit/send-notification',
+        method: 'POST',
+        payload: { wallet_addresses: walletAddresses, title, message, mini_app_path: miniAppPath },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { success: false, message: errorText || 'Notification send failed' };
     }
 
     return { success: true };

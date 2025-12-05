@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rateLimit';
 import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import { validateSameOrigin } from '@/lib/security';
+import { checksumAddress, isValidEvmAddress } from '@/lib/addressValidation';
 import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
 import { fetchWithBackoff } from '@/lib/fetchWithBackoff';
+import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 type NotificationApiKey = {
   value: string;
@@ -170,7 +173,11 @@ function getClientIp(req: NextRequest) {
 }
 
 function isValidWalletAddress(address: unknown): address is string {
-  return typeof address === 'string' && /^0x[a-fA-F0-9]{40}$/.test(address);
+  return isValidEvmAddress(address);
+}
+
+function normalizeWalletAddress(address: string) {
+  return checksumAddress(address);
 }
 
 function validatePayload(body: any) {
@@ -182,6 +189,7 @@ function validatePayload(body: any) {
   }
 
   const { walletAddresses, title, message, miniAppPath } = body;
+  const resolvedWalletAddresses = walletAddresses.map((address: string) => normalizeWalletAddress(address));
 
   if (!Array.isArray(walletAddresses) || walletAddresses.length === 0) {
     errors.push('walletAddresses debe ser un arreglo con al menos una dirección');
@@ -321,6 +329,7 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'ip_not_allowed',
     });
+    recordApiFailureMetric('send-notification', 'ip_not_allowed');
     return NextResponse.json({ success: false, message: 'IP no permitida' }, { status: 403 });
   }
 
@@ -334,11 +343,13 @@ export async function POST(req: NextRequest) {
       success: false,
       reason: 'origin_not_allowed',
     });
+    recordApiFailureMetric('send-notification', 'origin_not_allowed');
     return NextResponse.json({ success: false, message: 'Origen no permitido' }, { status: 403 });
   }
 
   if (!isAuthenticated(req)) {
     logAudit({ apiKey: providedKey, walletCount: 0, clientIp, origin, fingerprint, success: false, reason: 'auth_failed' });
+    recordApiFailureMetric('send-notification', 'auth_failed');
     return NextResponse.json({ success: false, message: 'No autorizado' }, { status: 401 });
   }
 
@@ -439,7 +450,7 @@ export async function POST(req: NextRequest) {
   if (!isNonceValid(body.nonce)) {
     logAudit({
       apiKey: providedKey,
-      walletCount: walletAddresses.length,
+      walletCount: resolvedWalletAddresses.length,
       clientIp,
       origin,
       fingerprint,
@@ -461,7 +472,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         app_id: process.env.APP_ID,
-        wallet_addresses: walletAddresses,
+        wallet_addresses: resolvedWalletAddresses,
         localisations: [
           {
             language: 'en',
@@ -479,22 +490,58 @@ export async function POST(req: NextRequest) {
       timeoutMs: 6000,
       maxRetries: 2,
     });
+          body: JSON.stringify({
+            app_id: process.env.APP_ID,
+            wallet_addresses: walletAddresses,
+            localisations: [
+              {
+                language: 'en',
+                title: sanitizedTitle,
+                message: sanitizedMessage,
+              },
+              {
+                language: 'es',
+                title: sanitizedTitle,
+                message: sanitizedMessage,
+              },
+            ],
+            mini_app_path: sanitizedMiniAppPath,
+          }),
+        }),
+      {
+        endpoint: '/api/v2/minikit/send-notification',
+        method: 'POST',
+        payload: {
+          app_id: process.env.APP_ID,
+          wallet_addresses: walletAddresses,
+          title: sanitizedTitle,
+          message: sanitizedMessage,
+          mini_app_path: sanitizedMiniAppPath,
+        },
+      }
+    );
 
     const result = await response.json();
 
     logAudit({
       apiKey: providedKey,
-      walletCount: walletAddresses.length,
+      walletCount: resolvedWalletAddresses.length,
       clientIp,
       origin,
       fingerprint,
       success: true,
-    await logAudit({ apiKey: providedKey, role: authResult.role, walletCount: walletAddresses.length, clientIp, success: true });
+    await logAudit({
+      apiKey: providedKey,
+      role: authResult.role,
+      walletCount: resolvedWalletAddresses.length,
+      clientIp,
+      success: true,
+    });
 
     logApiEvent('info', {
       path: 'send-notification',
       action: 'dispatch',
-      walletCount: walletAddresses.length,
+      walletCount: resolvedWalletAddresses.length,
       status: response.status,
     });
 
@@ -502,20 +549,33 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     logAudit({
       apiKey: providedKey,
-      walletCount: walletAddresses.length,
+      walletCount: resolvedWalletAddresses.length,
       clientIp,
       origin,
       fingerprint,
       success: false,
       reason: 'upstream_error',
     });
-    logAudit({ apiKey: providedKey, walletCount: walletAddresses.length, clientIp, success: false, reason: 'upstream_error' });
+    logAudit({
+      apiKey: providedKey,
+      walletCount: resolvedWalletAddresses.length,
+      clientIp,
+      success: false,
+      reason: 'upstream_error',
+    });
     return apiErrorResponse('UPSTREAM_ERROR', {
       message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
       path: 'send-notification',
       details: { error: (error as Error)?.message },
     });
-    await logAudit({ apiKey: providedKey, role: authResult.role, walletCount: walletAddresses.length, clientIp, success: false, reason: 'upstream_error' });
+    await logAudit({
+      apiKey: providedKey,
+      role: authResult.role,
+      walletCount: resolvedWalletAddresses.length,
+      clientIp,
+      success: false,
+      reason: 'upstream_error',
+    });
     console.error('Error enviando notificación al servicio protegido', error);
 
     return NextResponse.json(
