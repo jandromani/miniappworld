@@ -7,6 +7,7 @@ import { createRateLimiter } from '@/lib/rateLimit';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { appendNotificationAuditEvent } from '@/lib/notificationAuditLog';
 import { hashNotificationApiKey, resolveNotificationApiKey } from '@/lib/notificationApiKeys';
+import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 type NotificationApiKey = {
   value: string;
@@ -452,30 +453,44 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const response = await fetch('https://developer.worldcoin.org/api/v2/minikit/send-notification', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        app_id: process.env.APP_ID,
-        wallet_addresses: walletAddresses,
-        localisations: [
-          {
-            language: 'en',
-            title: sanitizedTitle,
-            message: sanitizedMessage,
+    const { response } = await performDeveloperRequest(
+      () =>
+        fetch('https://developer.worldcoin.org/api/v2/minikit/send-notification', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
+            'Content-Type': 'application/json',
           },
-          {
-            language: 'es',
-            title: sanitizedTitle,
-            message: sanitizedMessage,
-          },
-        ],
-        mini_app_path: sanitizedMiniAppPath,
-      }),
-    });
+          body: JSON.stringify({
+            app_id: process.env.APP_ID,
+            wallet_addresses: walletAddresses,
+            localisations: [
+              {
+                language: 'en',
+                title: sanitizedTitle,
+                message: sanitizedMessage,
+              },
+              {
+                language: 'es',
+                title: sanitizedTitle,
+                message: sanitizedMessage,
+              },
+            ],
+            mini_app_path: sanitizedMiniAppPath,
+          }),
+        }),
+      {
+        endpoint: '/api/v2/minikit/send-notification',
+        method: 'POST',
+        payload: {
+          app_id: process.env.APP_ID,
+          wallet_addresses: walletAddresses,
+          title: sanitizedTitle,
+          message: sanitizedMessage,
+          mini_app_path: sanitizedMiniAppPath,
+        },
+      }
+    );
 
     const result = await response.json();
 

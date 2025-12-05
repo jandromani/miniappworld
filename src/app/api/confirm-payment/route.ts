@@ -16,6 +16,7 @@ import { resolveTokenFromAddress } from '@/lib/constants';
 import { validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
+import { performDeveloperRequest } from '@/lib/developerPortalClient';
 
 const PATH = 'confirm-payment';
 
@@ -234,31 +235,32 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Consultar estado del pago en Developer Portal API
-    const response = await fetch(
-      `https://developer.worldcoin.org/api/v2/minikit/transaction/${payload.transaction_id}?app_id=${process.env.APP_ID}&type=payment`,
+    const { response } = await performDeveloperRequest(
+      () =>
+        fetch(
+          `https://developer.worldcoin.org/api/v2/minikit/transaction/${payload.transaction_id}?app_id=${process.env.APP_ID}&type=payment`,
+          {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
+            },
+          }
+        ),
       {
+        endpoint: '/api/v2/minikit/transaction',
         method: 'GET',
-        headers: {
-          Authorization: `Bearer ${process.env.DEV_PORTAL_API_KEY}`,
-        },
+        payload: { transaction_id: payload.transaction_id, app_id: process.env.APP_ID, type: 'payment' },
       }
     );
-  if (!response.ok) {
-    return apiErrorResponse('UPSTREAM_ERROR', {
-      message: 'No se pudo verificar el pago en Developer Portal',
-      path: PATH,
-      details: { status: response.status },
-    });
-  }
 
     if (!response.ok) {
-      return NextResponse.json(
-        { success: false, message: 'No se pudo verificar el pago en Developer Portal' },
-        { status: 502 }
-      );
+      return apiErrorResponse('UPSTREAM_ERROR', {
+        message: 'No se pudo verificar el pago en Developer Portal',
+        path: PATH,
+        details: { status: response.status },
+      });
     }
 
-    const transaction = await response.json();
     transaction = await response.json();
   }
 
