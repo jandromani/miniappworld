@@ -16,12 +16,13 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO tournament_entries (id, tournament_id, user_id, payment_status, score, finished_at)
+INSERT INTO tournament_entries (id, tournament_id, user_id, payment_status, payment_reference, score, finished_at)
 VALUES (
   '22222222-2222-2222-2222-222222222222',
   '11111111-1111-1111-1111-111111111111',
   '00000000-0000-0000-0000-000000000001',
   'paid',
+  'demo-buyin-001',
   0,
   NULL
 )
