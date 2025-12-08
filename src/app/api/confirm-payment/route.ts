@@ -10,9 +10,9 @@ import {
 } from '@/lib/database';
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
-import { sendNotification } from '@/lib/notificationService';
 import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
+import { recordApiFailureMetric } from '@/lib/metrics';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 import {
   observePaymentConfirmation,
@@ -21,6 +21,7 @@ import {
 } from '@/lib/metrics';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
 import { requireActiveSession } from '@/lib/sessionValidation';
+import { enqueuePaymentProcessing } from '@/lib/queues/paymentQueue';
 
 const PATH = 'confirm-payment';
 
@@ -592,15 +593,14 @@ export async function POST(req: NextRequest) {
     if (isSuccessful) {
       const confirmedAt = new Date().toISOString();
       const transactionIdValue = transactionId as string;
-      await updatePaymentStatus(
-        reference as string,
-        'confirmed',
-        {
-          transaction_id: transactionIdValue,
-          confirmed_at: confirmedAt,
-        },
-        { userId: storedPayment.user_id, sessionId }
-      );
+      await enqueuePaymentProcessing({
+        reference: reference as string,
+        transactionId: transactionIdValue,
+        confirmedAt,
+        sessionId,
+        userId: storedPayment.user_id,
+      });
+
       await recordAuditEvent({
         action: 'confirm_payment',
         entity: 'payments',
@@ -608,7 +608,7 @@ export async function POST(req: NextRequest) {
         sessionId,
         userId: storedPayment.user_id,
         status: 'success',
-        details: { transactionId: transactionIdValue },
+        details: { transactionId: transactionIdValue, queued: true },
       });
 
       logApiEvent('info', {

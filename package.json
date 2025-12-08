@@ -15,16 +15,21 @@
     "data:snapshot:restore": "node scripts/dataSnapshots.js restore",
     "data:snapshot:verify": "node scripts/dataSnapshots.js verify",
     "sessions:cleanup": "node -r ts-node/register scripts/cleanupExpiredSessions.ts",
+    "workers:start": "node -r ts-node/register/transpile-only scripts/workers.ts",
+    "workers:payments": "node -r ts-node/register/transpile-only scripts/paymentWorker.ts",
+    "workers:notifications": "node -r ts-node/register/transpile-only scripts/notificationWorker.ts"
     "db:migrate": "node scripts/runMigrations.js",
     "db:seed": "DB_SEED_ONLY=true node scripts/runMigrations.js"
   },
   "dependencies": {
     "@worldcoin/minikit-js": "^0.0.10",
     "@aws-sdk/client-cloudwatch-logs": "^3.679.0",
+    "bullmq": "^5.13.4",
     "@upstash/ratelimit": "^1.2.0",
     "@upstash/redis": "^1.31.5",
     "ethers": "^6.13.4",
     "eruda": "^3.0.0",
+    "ioredis": "^5.4.1",
     "better-sqlite3": "^11.8.1",
     "next": "14.2.5",
     "pg": "^8.12.0",
