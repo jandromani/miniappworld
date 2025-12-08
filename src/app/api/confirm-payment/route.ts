@@ -10,13 +10,12 @@ import {
 } from '@/lib/database';
 import { TOKEN_AMOUNT_TOLERANCE, resolveTokenFromAddress } from '@/lib/constants';
 import { normalizeTokenIdentifier, tokensMatch } from '@/lib/tokenNormalization';
-import { sendNotification } from '@/lib/notificationService';
 import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
-import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
 import { recordApiFailureMetric } from '@/lib/metrics';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
 import { requireActiveSession } from '@/lib/sessionValidation';
+import { enqueuePaymentProcessing } from '@/lib/queues/paymentQueue';
 
 const PATH = 'confirm-payment';
 
@@ -585,15 +584,14 @@ export async function POST(req: NextRequest) {
     if (isSuccessful) {
       const confirmedAt = new Date().toISOString();
       const transactionIdValue = transactionId as string;
-      await updatePaymentStatus(
-        reference as string,
-        'confirmed',
-        {
-          transaction_id: transactionIdValue,
-          confirmed_at: confirmedAt,
-        },
-        { userId: storedPayment.user_id, sessionId }
-      );
+      await enqueuePaymentProcessing({
+        reference: reference as string,
+        transactionId: transactionIdValue,
+        confirmedAt,
+        sessionId,
+        userId: storedPayment.user_id,
+      });
+
       await recordAuditEvent({
         action: 'confirm_payment',
         entity: 'payments',
@@ -601,7 +599,7 @@ export async function POST(req: NextRequest) {
         sessionId,
         userId: storedPayment.user_id,
         status: 'success',
-        details: { transactionId: transactionIdValue },
+        details: { transactionId: transactionIdValue, queued: true },
       });
 
       logApiEvent('info', {
@@ -611,30 +609,6 @@ export async function POST(req: NextRequest) {
         transactionId: transactionIdValue,
         userId: storedPayment.user_id,
       });
-
-      if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
-        const tournament = await getTournament(storedPayment.tournament_id);
-        if (tournament) {
-          await incrementTournamentPool(tournament);
-        }
-      }
-
-      if (storedPayment.wallet_address) {
-        const notificationResult = await sendNotification({
-          walletAddresses: [storedPayment.wallet_address],
-          title: 'Pago confirmado',
-          message: 'Pago confirmado, ya puedes unirte al torneo',
-          miniAppPath: storedPayment.tournament_id ? `/tournament/${storedPayment.tournament_id}` : '/tournament',
-        });
-
-        if (!notificationResult.success) {
-          console.error('No se pudo enviar la notificación de pago confirmado', {
-            reference,
-            walletAddress: storedPayment.wallet_address,
-            errorMessage: notificationResult.message,
-          });
-        }
-      }
 
       return NextResponse.json({
         success: true,

@@ -1,4 +1,4 @@
-import { sendNotification } from '@/lib/notificationService';
+import { enqueueNotification } from '@/lib/queues/notificationQueue';
 import { findPaymentByReference, listTournamentParticipants } from '@/lib/database';
 import { listTournaments } from '@/lib/server/tournamentData';
 import { Tournament } from '@/lib/types';
@@ -51,7 +51,13 @@ async function notifyParticipants(tournament: Tournament, phase: 'start' | 'end'
 
   for (let i = 0; i < walletAddresses.length; i += MAX_WALLETS_PER_REQUEST) {
     const chunk = walletAddresses.slice(i, i + MAX_WALLETS_PER_REQUEST);
-    await sendNotification({ walletAddresses: chunk, title, message, miniAppPath });
+    await enqueueNotification({
+      walletAddresses: chunk,
+      title,
+      message,
+      miniAppPath,
+      dedupKey: `tournament:${tournament.tournamentId}:${phase}:${i}`,
+    });
   }
 }
 

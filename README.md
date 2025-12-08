@@ -17,7 +17,10 @@ npm install
 npm run dev
 npm run build
 npm run start
+npm run workers:start
 ```
+
+> Consulta `docs/workers.md` para la configuración de Redis/BullMQ y el arranque de los workers de pagos y notificaciones.
 
 ## Auditoría y rotación de logs
 - El archivo `data/audit.log` rota automáticamente cuando cambia el día o al alcanzar el tamaño configurado (5 MB por defecto, puedes ajustar con `AUDIT_LOG_MAX_SIZE_BYTES`).

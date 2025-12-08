@@ -178,6 +178,20 @@ export async function getTournament(tournamentId: string): Promise<Tournament | 
   return toTournamentModel(finalizedRecord, participants.length);
 }
 
+export async function incrementTournamentPool(tournament: Tournament) {
+  await seedTournaments();
+  const record = await findTournamentRecord(tournament.tournamentId);
+  if (!record) return null;
+
+  const updatedRecord = {
+    ...record,
+    prize_pool: (BigInt(record.prize_pool ?? '0') + BigInt(record.buy_in_amount)).toString(),
+  };
+
+  await recordTournament(updatedRecord);
+  return toTournamentModel(updatedRecord, tournament.currentPlayers);
+}
+
 export async function getLeaderboardEntries(
   tournamentId: string,
   prizePool: string,
