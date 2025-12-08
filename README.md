@@ -57,6 +57,7 @@ npm run start
 - El almacenamiento local con journaling y watchdog de locks está pensado para entornos de desarrollo o despliegues pequeños. Para producción, evalúa migrar a una base transaccional (PostgreSQL/Redis) que gestione concurrencia y durabilidad.
 - Configura `DB_DIALECT=postgres` o `DB_DIALECT=redis` junto con tus credenciales para preparar la transición; el código usa esta señal para ajustar niveles de aislamiento y tiempos de espera.
 - Cuando delegues el estado a una base gestionada, define `DISABLE_LOCAL_STATE=true` para evitar escrituras en disco y asegurar compatibilidad con réplicas sin almacenamiento local. Mantén `STATE_DIRECTORY` apuntando a un volumen efímero solo si necesitas un respaldo puntual en el entorno actual.
+- Para aplicar el esquema relacional y cargar los datos de prueba, usa los SQL en `db/migrations/<dialect>` y `db/seeds/<dialect>` ejecutando `npm run db:migrate` (SQLite por defecto) o definiendo `DB_DIALECT=postgres` + `DATABASE_URL`.
 
 ## Configuración de MiniKit
 Define en `.env`:
