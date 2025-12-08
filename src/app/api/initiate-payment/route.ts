@@ -11,11 +11,13 @@ import { SUPPORTED_TOKENS, SupportedToken, resolveTokenFromAddress } from '@/lib
 import { normalizeTokenIdentifier, isSupportedTokenSymbol, isSupportedTokenAddress } from '@/lib/tokenNormalization';
 import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
-import { recordApiFailureMetric } from '@/lib/metrics';
+import { observePaymentInitiation, recordApiFailureMetric, recordWorkflowError } from '@/lib/metrics';
 
 const PATH = 'initiate-payment';
 
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
+  let status: 'success' | 'error' = 'error';
   try {
     const envError = validateCriticalEnvVars();
     if (envError) {
@@ -166,6 +168,7 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      status = 'success';
       return NextResponse.json({
         success: true,
         reference,
@@ -230,6 +233,7 @@ export async function POST(req: NextRequest) {
       userId: verifiedUserId,
     });
 
+    status = 'success';
     return NextResponse.json({ success: true, reference, tournamentId });
   } catch (error) {
     if (isLocalStorageDisabled(error)) {
@@ -244,6 +248,9 @@ export async function POST(req: NextRequest) {
 
     console.error('[initiate-payment] Error inesperado', error);
     recordApiFailureMetric(PATH, 'UNEXPECTED_ERROR');
+    recordWorkflowError('payment_initiation', 'unexpected');
     return NextResponse.json({ success: false, message: 'Error interno al iniciar pago' }, { status: 500 });
+  } finally {
+    observePaymentInitiation(status, Date.now() - startedAt);
   }
 }

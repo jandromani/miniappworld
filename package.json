@@ -18,6 +18,8 @@
     "workers:start": "node -r ts-node/register/transpile-only scripts/workers.ts",
     "workers:payments": "node -r ts-node/register/transpile-only scripts/paymentWorker.ts",
     "workers:notifications": "node -r ts-node/register/transpile-only scripts/notificationWorker.ts"
+    "db:migrate": "node scripts/runMigrations.js",
+    "db:seed": "DB_SEED_ONLY=true node scripts/runMigrations.js"
   },
   "dependencies": {
     "@worldcoin/minikit-js": "^0.0.10",
@@ -28,7 +30,9 @@
     "ethers": "^6.13.4",
     "eruda": "^3.0.0",
     "ioredis": "^5.4.1",
+    "better-sqlite3": "^11.8.1",
     "next": "14.2.5",
+    "pg": "^8.12.0",
     "prom-client": "^15.1.2",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -43,6 +47,7 @@
     "@types/react": "18.3.10",
     "@types/react-dom": "18.3.0",
     "@types/uuid": "10.0.0",
+    "autocannon": "^7.14.0",
     "@types/jest": "29.5.12",
     "eslint": "8.57.1",
     "eslint-config-next": "14.2.5",

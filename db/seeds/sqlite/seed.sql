@@ -14,12 +14,13 @@ VALUES (
   datetime('now', '+2 day')
 );
 
-INSERT OR IGNORE INTO tournament_entries (id, tournament_id, user_id, payment_status, score, finished_at)
+INSERT OR IGNORE INTO tournament_entries (id, tournament_id, user_id, payment_status, payment_reference, score, finished_at)
 VALUES (
   'entry-demo-1',
   'tournament-demo-1',
   'player-demo-1',
   'paid',
+  'demo-buyin-001',
   0,
   NULL
 );

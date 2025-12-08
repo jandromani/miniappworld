@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { sanitizeText } from '@/lib/sanitize';
 import { apiErrorResponse, logApiEvent } from '@/lib/apiError';
-import { recordApiFailureMetric } from '@/lib/metrics';
+import { recordApiFailureMetric, recordWorkflowError, startQueueTracking } from '@/lib/metrics';
 import { validateSameOrigin } from '@/lib/security';
 import { checksumAddress, isValidEvmAddress } from '@/lib/addressValidation';
 import { createRateLimiter } from '@/lib/rateLimit';
@@ -407,6 +407,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const finalizeQueue = startQueueTracking('notification_dispatch');
+
   try {
     const response = await fetchWithBackoff('https://developer.worldcoin.org/api/v2/minikit/send-notification', {
       method: 'POST',
@@ -449,6 +451,7 @@ export async function POST(req: NextRequest) {
         reason: `upstream_status_${response.status}`,
       });
       recordApiFailureMetric('send-notification', `upstream_${response.status}`);
+      finalizeQueue('error');
       return apiErrorResponse('UPSTREAM_ERROR', {
         message: result?.message ?? 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',
         path: 'send-notification',
@@ -471,6 +474,7 @@ export async function POST(req: NextRequest) {
       status: response.status,
     });
 
+    finalizeQueue('success');
     return NextResponse.json(result, { status: 200 });
   } catch (error) {
     await logAudit({
@@ -483,6 +487,8 @@ export async function POST(req: NextRequest) {
       reason: 'upstream_error',
     });
     recordApiFailureMetric('send-notification', 'upstream_error');
+    recordWorkflowError('notification_dispatch', 'upstream_error');
+    finalizeQueue('error');
 
     return apiErrorResponse('UPSTREAM_ERROR', {
       message: 'No se pudo enviar la notificación. Considere enrutar el envío a un servicio backend protegido.',

@@ -1,57 +1,53 @@
-# Observabilidad y respuesta a incidentes
+# Observabilidad y resiliencia
 
-Este playbook describe cómo activar alertas sobre las métricas expuestas en `/api/metrics`, centralizar logs/auditorías y practicar los procedimientos de respuesta a incidentes.
+Este repositorio expone métricas Prometheus y utilidades de pruebas de carga para verificar la migración de base de datos/cola.
 
-## Métricas base
-- `api_failures_total{path,code}` y `alertable_api_failures_total{path,code}`: errores de API por endpoint (pagos, verificación y notificaciones están etiquetados como alertables).
-- `db_contention_total{scope}` y `db_deadlock_total{scope}`: colisiones de locks y deadlocks detectados en la capa de persistencia.
-- `db_transaction_duration_ms{scope,isolation}`: latencia de transacciones en ms por alcance y nivel de aislamiento.
+## Métricas añadidas
+- `payment_initiation_duration_ms{status}`: histograma de latencia en la creación de pagos (p95/p99 recomendados en dashboards).
+- `payment_confirmation_duration_ms{status}`: histograma de latencia al confirmar pagos end-to-end.
+- `tournament_join_latency_ms{status}`: latencia de inscripción a torneos (se incrementa al persistir el participante).
+- `queue_latency_ms{queue,status}` y `queue_size{queue}`: latencia y tamaño de la cola de despacho de notificaciones.
+- `workflow_errors_total{stage,reason}`: contador de errores de negocio (pagos, inscripciones, notificaciones).
+- Métricas existentes (`api_failures_total`, `alertable_api_failures_total`, etc.) siguen disponibles y pueden cruzarse en Grafana.
 
-## Reglas de alerta sugeridas
-Usa Alertmanager/Rule Manager de Prometheus para crear reglas con anotaciones que apunten a las runbooks de cada caso. Ejemplos en PromQL:
+Las métricas se exponen en `/api/metrics` (sin caché). Configura Prometheus para scrapear `https://<host>/api/metrics`.
 
-- **Pagos fallidos (alta prioridad)**
-  ```promql
-  increase(alertable_api_failures_total{path=~"initiate-payment|confirm-payment"}[5m]) >= 3
-  ```
-  - Añade una versión adicional con ventana de 15 minutos para identificar degradaciones sostenidas (`>= 10`).
-- **Tasa de errores de API**
-  ```promql
-  rate(api_failures_total[5m]) >= 0.2
-  ```
-  - Si no hay requests de referencia, usa umbrales absolutos (`increase(...) >= 5`) y ajusta por endpoint con `by (path)`.
-- **Contención/locks**
-  ```promql
-  rate(db_contention_total[5m]) >= 1
-  ```
-  - Crea otra alerta específica para deadlocks: `rate(db_deadlock_total[5m]) > 0` con severidad crítica.
+## Dashboards y alarmas
+- Importa `docs/grafana-dashboard.json` en Grafana y selecciona el datasource de Prometheus.
+- Paneles incluidos: latencia de pago (p95), latencia de inscripción, errores por flujo y tamaño de cola.
+- Alertas sugeridas (Prometheus rule):
+  - `histogram_quantile(0.95, sum(rate(payment_confirmation_duration_ms_bucket[5m])) by (le)) > 1000` durante 10m -> degradación severa.
+  - `sum(increase(workflow_errors_total[5m])) by (stage) > 5` -> investigar picos de errores de negocio.
+  - `queue_size{queue="notification_dispatch"} > 10` durante 5m -> posible atasco en notificaciones.
 
-Anexa labels de servicio (`service="miniappworld"`) y ruta del runbook (`runbook_url`) para facilitar el enrutamiento.
+## SLA de referencia
+- Pagos (inicio/confirmación): p95 < 800 ms, p99 < 1500 ms.
+- Inscripción a torneo: p95 < 700 ms, p99 < 1200 ms.
+- Errores de flujo: < 1% de las solicitudes, con objetivo duro < 2%.
+- Cola de notificaciones: tamaño medio < 5; tiempo de despacho p95 < 500 ms.
 
-## Centralización de logs y auditorías
-- El archivo `data/audit.log` rota por tamaño o cambio de día y purga archivos rotados tras `AUDIT_LOG_RETENTION_DAYS` (30 días por defecto).
-- Reenvío soportado sin cambios de código:
-  - HTTP/ELK/webhooks: define `AUDIT_LOG_HTTP_ENDPOINT` y `AUDIT_LOG_HTTP_AUTHORIZATION` para enviar cada entrada como `POST` JSON.
-  - AWS CloudWatch Logs: configura `AUDIT_LOG_CLOUDWATCH_GROUP`, `AUDIT_LOG_CLOUDWATCH_STREAM` y `AWS_REGION` para publicar y crear recursos automáticamente.
-- Recomendado:
-  - Activar un collector (Filebeat/Vector/Fluent Bit) que lea `data/*.log` y envíe a tu observability stack (Grafana/Loki u OpenSearch) con retención mínima de 30-45 días.
-  - Normalizar el parseo JSON para conservar los campos `type`, `path`, `code` y `scope`, y redactar datos sensibles (ya se pseudonimizan antes de escribirse en disco).
-  - Configurar dashboards: errores por endpoint, latencia de transacciones y top de contención de locks; enlaza gráficos a las alertas anteriores.
+## Pruebas de carga
+Se añadió `scripts/loadtest.mjs` (usa `autocannon`). Variables clave:
+- `LOADTEST_TARGET` (URL base), `LOADTEST_USERS` (conexiones concurrentes), `LOADTEST_DURATION` (segundos).
+- `LOADTEST_TOURNAMENT_ID`, `LOADTEST_USER_ID`, `LOADTEST_WALLET_ADDRESS`, `LOADTEST_SESSION_COOKIE`, `LOADTEST_CSRF_TOKEN` para cumplir validaciones de los endpoints.
+- `LOADTEST_NOTIFICATION_WALLETS` coma-separado para las wallets receptoras; `LOADTEST_OUTPUT` para elegir archivo de resultados.
 
-## Procedimientos de respuesta a incidentes
-1. **Detección**: las alertas anteriores deben abrir un incidente en tu herramienta (PagerDuty, Opsgenie) con severidad según ruta (`confirm-payment` > `verify-world-id` > otros).
-2. **Triaging rápido** (15 minutos):
-   - Revisar panel de métricas para confirmar si el problema es puntual o sostenido.
-   - Consultar logs centralizados filtrando por `type=operational_alert` o por `scope` en contención para ubicar la operación específica.
-3. **Mitigación**:
-   - Pagos: pausar nuevas inscripciones si los fallos persisten, revisar conectividad con Developer Portal y reintentar transacciones pendientes.
-   - API genérica: habilitar modo degradado (limitar notificaciones, ampliar timeouts) y validar dependencias externas.
-   - Contención/deadlocks: reducir concurrencia del proceso afectado, revisar duración de transacciones y aumentar `DB_BUSY_TIMEOUT_MS` solo si es temporal.
-4. **Comunicación**: actualizar cada 30 minutos en el canal de incidentes, registrar línea de tiempo y decisiones.
-5. **Cierre y post-mortem**: documentar causa raíz, métricas de impacto y acciones preventivas.
+Ejemplo:
+```bash
+LOADTEST_TARGET=http://localhost:3000 \
+LOADTEST_USERS=25 \
+LOADTEST_DURATION=60 \
+LOADTEST_TOURNAMENT_ID=test-tournament \
+LOADTEST_USER_ID=user-123 \
+LOADTEST_WALLET_ADDRESS=0xabc... \
+LOADTEST_SESSION_COOKIE="SESSION=..." \
+LOADTEST_CSRF_TOKEN=... \
+node scripts/loadtest.mjs
+```
 
-### Simulacros de verificación
-Ejecuta estos ejercicios al menos una vez por trimestre para validar cobertura de alertas y dashboards:
-- Forzar un pago fallido con datos inválidos en `/api/confirm-payment` y confirmar que se incrementa `alertable_api_failures_total` y dispara la alerta.
-- Simular contención ejecutando operaciones concurrentes que tomen el lock del archivo de base de datos y verificar que `db_contention_total` aumenta y aparece en el panel.
-- Validar que las entradas de `audit.log` se envían al colector (observa eventos en el dashboard de logs) y que se respetan las políticas de retención.
+El script genera un `loadtest-results.json` con latencias, throughput y errores agregados; úsalo junto con las métricas de Prometheus para validar el SLA.
+
+## Interpretación rápida
+- Si `workflow_errors_total` sube junto a `api_failures_total`, revisar logs de auditoría y causas de validación.
+- Si `queue_size{queue="notification_dispatch"}` crece y `queue_latency_ms` supera el SLA, reducir la tasa de envío en el script o escalar el worker de notificaciones.
+- Ajustar índices o concurrencia de workers dependiendo de la correlación entre `db_transaction_duration_ms` y los histogramas de pago/inscripción.

@@ -14,6 +14,7 @@ import {
 } from '@/lib/database';
 import { LeaderboardEntry, Tournament } from '@/lib/types';
 import { normalizeTokenIdentifier } from '../tokenNormalization';
+import { observeTournamentJoin, recordWorkflowError } from '../metrics';
 
 let seeded = false;
 
@@ -300,14 +301,24 @@ export async function addParticipantRecord(
   paymentReference: string,
   walletAddress?: string,
 ) {
-  await seedTournaments();
-  await addTournamentParticipant({
-    tournament_id: tournamentId,
-    user_id: userId,
-    payment_reference: paymentReference,
-    joined_at: new Date().toISOString(),
-    status: 'joined',
-  }, { userId }, { walletAddress });
+  const startedAt = Date.now();
+  let status: 'success' | 'error' = 'error';
+  try {
+    await seedTournaments();
+    await addTournamentParticipant({
+      tournament_id: tournamentId,
+      user_id: userId,
+      payment_reference: paymentReference,
+      joined_at: new Date().toISOString(),
+      status: 'joined',
+    }, { userId }, { walletAddress });
+    status = 'success';
+  } catch (error) {
+    recordWorkflowError('tournament_join', 'persistence_error');
+    throw error;
+  } finally {
+    observeTournamentJoin(status, Date.now() - startedAt);
+  }
 }
 
 export async function participantExists(tournamentId: string, userId: string) {
