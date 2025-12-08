@@ -14,7 +14,11 @@ import { sendNotification } from '@/lib/notificationService';
 import { validateCsrf, validateSameOrigin } from '@/lib/security';
 import { validateCriticalEnvVars } from '@/lib/envValidation';
 import { getTournament, incrementTournamentPool } from '@/lib/server/tournamentData';
-import { recordApiFailureMetric } from '@/lib/metrics';
+import {
+  observePaymentConfirmation,
+  recordApiFailureMetric,
+  recordWorkflowError,
+} from '@/lib/metrics';
 import { performDeveloperRequest } from '@/lib/developerPortalClient';
 import { requireActiveSession } from '@/lib/sessionValidation';
 
@@ -118,6 +122,8 @@ async function recordFailureAudit(
 }
 
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
+  let status: 'success' | 'error' = 'error';
   try {
     const envError = validateCriticalEnvVars();
     if (envError) {
@@ -229,6 +235,7 @@ export async function POST(req: NextRequest) {
         status: 'success',
         details: { reason: 'already_confirmed', transactionId: storedPayment.transaction_id },
       });
+      status = 'success';
       return NextResponse.json({
         success: true,
         message: 'Pago ya confirmado previamente',
@@ -614,9 +621,9 @@ export async function POST(req: NextRequest) {
 
       if (storedPayment.type === 'tournament' && storedPayment.tournament_id) {
         const tournament = await getTournament(storedPayment.tournament_id);
-        if (tournament) {
-          await incrementTournamentPool(tournament);
-        }
+      if (tournament) {
+        await incrementTournamentPool(tournament);
+      }
       }
 
       if (storedPayment.wallet_address) {
@@ -636,6 +643,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      status = 'success';
       return NextResponse.json({
         success: true,
         message: 'Pago confirmado',
@@ -672,10 +680,13 @@ export async function POST(req: NextRequest) {
 
     console.error('[confirm-payment] Error inesperado', error);
     recordApiFailureMetric(PATH, 'UNEXPECTED_ERROR');
+    recordWorkflowError('payment_confirmation', 'unexpected');
     return NextResponse.json(
       { success: false, message: 'No se pudo confirmar el pago. Intente nuevamente más tarde.' },
       { status: 500 }
     );
+  } finally {
+    observePaymentConfirmation(status, Date.now() - startedAt);
   }
 }
 

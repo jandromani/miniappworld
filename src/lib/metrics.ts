@@ -1,4 +1,4 @@
-import { Counter, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
+import { Counter, Gauge, Histogram, Registry, collectDefaultMetrics } from 'prom-client';
 
 type FailureLabels = { path: string; code: string };
 
@@ -30,6 +30,40 @@ const dbTransactionDuration = getOrCreateHistogram('db_transaction_duration_ms',
   buckets: [5, 10, 25, 50, 75, 100, 250, 500, 1000, 2000, 5000],
 });
 
+const paymentInitiationDuration = getOrCreateHistogram('payment_initiation_duration_ms', {
+  help: 'Tiempo de inserción de pagos hasta respuesta al cliente',
+  labelNames: ['status'],
+  buckets: [10, 25, 50, 75, 100, 250, 500, 1000, 2000, 5000],
+});
+
+const paymentConfirmationDuration = getOrCreateHistogram('payment_confirmation_duration_ms', {
+  help: 'Tiempo desde recepción de confirmación hasta persistirla',
+  labelNames: ['status'],
+  buckets: [10, 25, 50, 75, 100, 250, 500, 1000, 2000, 5000],
+});
+
+const tournamentJoinLatency = getOrCreateHistogram('tournament_join_latency_ms', {
+  help: 'Latencia de inscripciones a torneos',
+  labelNames: ['status'],
+  buckets: [10, 25, 50, 75, 100, 250, 500, 1000, 2000, 5000],
+});
+
+const queueLatency = getOrCreateHistogram('queue_latency_ms', {
+  help: 'Latencia de procesamiento por cola',
+  labelNames: ['queue', 'status'],
+  buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000],
+});
+
+const queueDepthGauge = getOrCreateGauge('queue_size', {
+  help: 'Número de elementos/envíos pendientes por cola',
+  labelNames: ['queue'],
+});
+
+const workflowErrorCounter = getOrCreateCounter('workflow_errors_total', {
+  help: 'Conteo de errores por etapa de negocio',
+  labelNames: ['stage', 'reason'],
+});
+
 const ALERT_PATHS = new Set(['initiate-payment', 'confirm-payment', 'verify-world-id', 'send-notification']);
 
 function getOrCreateRegistry() {
@@ -55,6 +89,18 @@ function getOrCreateCounter(name: string, options: { help: string; labelNames: (
     name,
     help: options.help,
     labelNames: options.labelNames as string[],
+    registers: [registry],
+  });
+}
+
+function getOrCreateGauge(name: string, options: { help: string; labelNames: string[] }) {
+  const existing = registry.getSingleMetric(name);
+  if (existing) return existing as Gauge<string>;
+
+  return new Gauge({
+    name,
+    help: options.help,
+    labelNames: options.labelNames,
     registers: [registry],
   });
 }
@@ -107,6 +153,32 @@ export function recordDbDeadlock(scope: string) {
 
 export function observeDbTransactionDuration(scope: string, isolation: string, durationMs: number) {
   dbTransactionDuration.labels({ scope, isolation }).observe(durationMs);
+}
+
+export function observePaymentInitiation(status: 'success' | 'error', durationMs: number) {
+  paymentInitiationDuration.labels({ status }).observe(durationMs);
+}
+
+export function observePaymentConfirmation(status: 'success' | 'error', durationMs: number) {
+  paymentConfirmationDuration.labels({ status }).observe(durationMs);
+}
+
+export function observeTournamentJoin(status: 'success' | 'error', durationMs: number) {
+  tournamentJoinLatency.labels({ status }).observe(durationMs);
+}
+
+export function startQueueTracking(queue: string) {
+  const startedAt = Date.now();
+  queueDepthGauge.labels({ queue }).inc();
+
+  return (status: 'success' | 'error') => {
+    queueDepthGauge.labels({ queue }).dec();
+    queueLatency.labels({ queue, status }).observe(Date.now() - startedAt);
+  };
+}
+
+export function recordWorkflowError(stage: string, reason: string) {
+  workflowErrorCounter.labels({ stage, reason }).inc();
 }
 
 export async function getMetricsSnapshot() {
